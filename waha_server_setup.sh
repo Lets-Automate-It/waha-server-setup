@@ -1,17 +1,17 @@
 #!/bin/bash
 
 # This script automates the installation of WAHA (WhatsApp Automation Tool) on an Ubuntu DigitalOcean VPS.
-# It sets up Docker, Docker Compose, Nginx as a reverse proxy, and secures it with Let's Encrypt SSL.
-# The user will be prompted for their subdomain, email, desired WAHA version.
+# It sets up Docker, Docker Compose, Apache as a reverse proxy, and secures it with Let's Encrypt SSL.
+# The user will be prompted for their subdomain, email, and desired WAHA version.
 # A strong API key will be automatically generated.
-# Dashboard and Swagger UI access will be secured with Nginx basic authentication, regardless of WAHA version.
-# Additional security measures including Nginx rate limiting, security headers, and Fail2Ban will be configured.
+# Dashboard and Swagger UI access will be secured with Apache basic authentication.
+# Additional security measures including comprehensive security headers and Fail2Ban will be configured.
 
 # --- Configuration Variables ---
 WAHA_INSTALL_DIR="/opt/waha"
 DOCKER_COMPOSE_VERSION="v2.20.2" # A recent stable version of Docker Compose
-HTPASSWD_DIR="/etc/nginx/conf.d" # Directory to store .htpasswd files
-NGINX_CONF_D_DIR="/etc/nginx/conf.d" # Directory for additional Nginx configs
+# .htpasswd files for Apache will be stored in a secure location within Apache's conf
+APACHE_HTPASSWD_DIR="/etc/apache2/conf.d" # Directory to store .htpasswd files for Apache basic auth
 
 # --- Functions ---
 
@@ -23,9 +23,9 @@ die() {
 
 # --- Preamble and Warnings ---
 echo "----------------------------------------------------"
-echo "WAHA Automation Installation Script"
+echo "WAHA Automation Installation Script (using Apache)"
 echo "----------------------------------------------------"
-echo "This script will install Docker, Docker Compose, Nginx, Certbot, and WAHA."
+echo "This script will install Docker, Docker Compose, Apache, Certbot, and Fail2Ban."
 echo "It is designed for a fresh Ubuntu 20.04+ DigitalOcean VPS."
 echo "IMPORTANT: Ensure your DNS records for your subdomain are pointing to this VPS's IP address BEFORE running this script."
 echo "You will be prompted for necessary information."
@@ -64,6 +64,13 @@ case "$WAHA_CHOICE" in
 esac
 
 echo "You chose to install $WAHA_TYPE."
+# Inform the user about Dashboard/Swagger availability for Core versions
+if [[ "$WAHA_TYPE" == "WAHA Core" || "$WAHA_TYPE" == "WAHA ARM (Core)" ]]; then
+    echo "Note: The WAHA Dashboard and Swagger UI are features of WAHA Plus. If you proceed with a Core version,"
+    echo "Apache basic authentication will still be configured for /dashboard and /swagger, but the WAHA"
+    echo "application itself will not serve content at those paths, resulting in a blank page after login."
+    echo "The main API endpoint (/) will function as expected."
+fi
 echo ""
 
 # --- Auto-generate a strong API key ---
@@ -75,9 +82,9 @@ fi
 echo "Generated API Key: $WAHA_API_KEY"
 echo ""
 
-# --- Get Dashboard and Swagger UI Nginx Basic Auth Credentials (Optional) ---
-DASHBOARD_HTPASSWD_FILE="$HTPASSWD_DIR/${SUBDOMAIN}_dashboard.htpasswd"
-SWAGGER_HTPASSWD_FILE="$HTPASSWD_DIR/${SUBDOMAIN}_swagger.htpasswd"
+# --- Get Dashboard and Swagger UI Apache Basic Auth Credentials (Optional) ---
+DASHBOARD_HTPASSWD_FILE="$APACHE_HTPASSWD_DIR/${SUBDOMAIN}_dashboard.htpasswd"
+SWAGGER_HTPASSWD_FILE="$APACHE_HTPASSWD_DIR/${SUBDOMAIN}_swagger.htpasswd"
 
 read -p "Set a username for WAHA Dashboard Basic Authentication (leave empty for no dashboard basic auth): " DASHBOARD_USERNAME
 if [ -n "$DASHBOARD_USERNAME" ]; then
@@ -104,7 +111,7 @@ echo "----------------------------------------------------"
 # --- Update System and Install Prerequisites ---
 echo "--> Updating system and installing prerequisites..."
 apt update -y || die "Failed to update package lists."
-# Added fail2ban to prerequisites
+# Install apache2-utils for htpasswd and fail2ban
 apt install -y apt-transport-https ca-certificates curl software-properties-common ufw apache2-utils fail2ban || die "Failed to install prerequisites."
 
 # --- Configure UFW Firewall ---
@@ -132,257 +139,187 @@ apt install -y docker-ce docker-ce-cli containerd.io || die "Failed to install D
 # Add current user to the docker group (to run docker commands without sudo)
 usermod -aG docker "$SUDO_USER" # Adds the user who invoked sudo to the docker group
 echo "Docker installed successfully."
-echo "NOTE: For your user ('$SUDO_USER') to run Docker commands without 'sudo', you may need to log out and log back in, or run 'newgrp docker'."
+echo "NOTE: For your user ('$SUDO_USER') to run Docker commands without 'sudo', you may need to log out and log in again, or run 'newgrp docker'."
 
-# --- Install Nginx and Certbot ---
-echo "--> Installing Nginx and Certbot..."
-apt install -y nginx certbot python3-certbot-nginx || die "Failed to install Nginx or Certbot."
+# --- Uninstall Nginx (if present) ---
+echo "--> Checking for and uninstalling Nginx if present..."
+if dpkg -s nginx >/dev/null 2>&1; then
+    systemctl stop nginx || true
+    apt purge -y nginx nginx-common || die "Failed to purge Nginx."
+    apt autoremove -y || die "Failed to autoremove Nginx dependencies."
+    rm -f /etc/nginx/sites-available/$SUBDOMAIN # Clean up old Nginx site config
+    rm -f /etc/nginx/sites-enabled/$SUBDOMAIN
+    rm -f "$APACHE_HTPASSWD_DIR/waha_security_headers_and_rate_limits.conf" # Clean up global Nginx config
+    # Remove include from nginx.conf
+    sed -i '/include \/etc\/nginx\/conf\.d\/waha_security_headers_and_rate_limits\.conf;/d' /etc/nginx/nginx.conf || true
+    echo "Nginx uninstalled."
+else
+    echo "Nginx not found, skipping uninstallation."
+fi
+
+# --- Install Apache and Certbot Apache Plugin ---
+echo "--> Installing Apache2 and Certbot Apache plugin..."
+apt install -y apache2 python3-certbot-apache || die "Failed to install Apache2 or Certbot Apache plugin."
+
+# --- Enable Apache Modules ---
+echo "--> Enabling Apache modules..."
+a2enmod proxy proxy_http ssl headers rewrite authz_core auth_basic || die "Failed to enable Apache modules."
+systemctl restart apache2 || die "Failed to restart Apache2 after enabling modules."
 
 # --- Create .htpasswd files if credentials provided ---
-mkdir -p "$HTPASSWD_DIR" || die "Failed to create .htpasswd directory."
+mkdir -p "$APACHE_HTPASSWD_DIR" || die "Failed to create .htpasswd directory for Apache."
 if [ -n "$DASHBOARD_USERNAME" ]; then
-    echo "Creating .htpasswd for Dashboard..."
+    echo "Creating .htpasswd for Dashboard (Apache)..."
     htpasswd -cb "$DASHBOARD_HTPASSWD_FILE" "$DASHBOARD_USERNAME" "$DASHBOARD_PASSWORD" || die "Failed to create dashboard .htpasswd file."
     chmod 640 "$DASHBOARD_HTPASSWD_FILE" # Secure permissions
+    chown root:www-data "$DASHBOARD_HTPASSWD_FILE" # Ensure Apache can read it
 fi
 
 if [ -n "$SWAGGER_USERNAME" ]; then
-    echo "Creating .htpasswd for Swagger UI..."
+    echo "Creating .htpasswd for Swagger UI (Apache)..."
     htpasswd -cb "$SWAGGER_HTPASSWD_FILE" "$SWAGGER_USERNAME" "$SWAGGER_PASSWORD" || die "Failed to create swagger .htpasswd file."
     chmod 640 "$SWAGGER_HTPASSWD_FILE" # Secure permissions
+    chown root:www-data "$SWAGGER_HTPASSWD_FILE" # Ensure Apache can read it
 fi
 
-# --- Configure Nginx Rate Limiting Zones and Security Headers ---
-echo "--> Configuring Nginx global security settings and rate limiting zones..."
-mkdir -p "$NGINX_CONF_D_DIR" || die "Failed to create Nginx conf.d directory."
+# --- Configure Apache Virtual Host for WAHA ---
+echo "--> Configuring Apache Virtual Host for $SUBDOMAIN..."
+APACHE_CONF_FILE="/etc/apache2/sites-available/$SUBDOMAIN.conf"
 
-# Create a file for global Nginx settings (rate limiting zones, security headers)
-cat <<EOF > "$NGINX_CONF_D_DIR/waha_security_headers_and_rate_limits.conf"
-# Rate limiting zones (located in http context, so define in /etc/nginx/conf.d/)
-# Limit dashboard/swagger requests to 100 requests per second, with a burst of 50.
-# This allows for a burst of requests (e.g., loading multiple JS files) but limits sustained rate.
-limit_req_zone \$binary_remote_addr zone=dashboard_req_limit:10m rate=100r/s;
-# Limit main API requests to 50 requests per second, with a burst of 50.
-limit_req_zone \$binary_remote_addr zone=api_req_limit:10m rate=50r/s;
+cat <<EOF > "$APACHE_CONF_FILE"
+<VirtualHost *:80>
+    ServerName $SUBDOMAIN
+    # DocumentRoot /var/www/html # Certbot uses this for challenges
 
-# Optional: Limit concurrent connections per IP
-# limit_conn_zone \$binary_remote_addr zone=conn_limit:10m;
+    # Certbot challenge path. Alias needed if not using DocumentRoot for challenges.
+    Alias /.well-known/acme-challenge/ /var/www/html/.well-known/acme-challenge/
+    <Directory /var/www/html/.well-known/acme-challenge/>
+        Options Indexes FollowSymLinks
+        AllowOverride None
+        Require all granted
+    </Directory>
 
-# Global Security Headers
-add_header X-Frame-Options SAMEORIGIN always;
-add_header X-Content-Type-Options nosniff always;
-add_header X-XSS-Protection "1; mode=block" always;
-add_header Referrer-Policy "no-referrer-when-downgrade" always;
-# Strict-Transport-Security (HSTS)
-# This header ensures that the browser only communicates with the server over HTTPS,
-# preventing MITM attacks. Max-age typically 6 months to 2 years.
-add_header Strict-Transport-Security "max-age=15768000; includeSubDomains; preload" always;
-# Content-Security-Policy: IMPORTANT: This can break websites if not properly configured.
-# This policy is a basic one that allows content from the same origin ('self') and
-# allows inline styles ('unsafe-inline') which are common for dashboards.
-# You might need to adjust this based on specific external resources or inline scripts
-# used by WAHA's dashboard/swagger.
-# For example, if it uses Google Fonts, you'd need to add 'fonts.googleapis.com' to font-src.
-add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self';" always;
+    RewriteEngine On
+    RewriteCond %{HTTPS} off
+    RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+</VirtualHost>
+
+<IfModule mod_ssl.c>
+<VirtualHost *:443>
+    ServerName $SUBDOMAIN
+
+    # Proxy settings
+    ProxyRequests Off
+    ProxyPreserveHost On
+    ProxyTimeout 900 # Increase timeout for long-running operations
+
+    # Deny access to sensitive files (like .htpasswd)
+    <Files ".ht*">
+        Require all denied
+    </Files>
+
+    # Main API endpoint (no basic auth here)
+    ProxyPass / http://localhost:3000/
+    ProxyPassReverse / http://localhost:3000/
+
+    # Proxy for Dashboard with optional Basic Auth
+    <Location /dashboard>
+        $( [ -n "$DASHBOARD_USERNAME" ] && echo "AuthType Basic" )
+        $( [ -n "$DASHBOARD_USERNAME" ] && echo "AuthName \"WAHA Dashboard\"" )
+        $( [ -n "$DASHBOARD_USERNAME" ] && echo "AuthUserFile $DASHBOARD_HTPASSWD_FILE" )
+        $( [ -n "$DASHBOARD_USERNAME" ] && echo "Require valid-user" )
+        # Optional: IP Whitelisting (uncomment and replace with your IP if needed)
+        # Require ip YOUR_IP_ADDRESS
+        ProxyPass http://localhost:3000/dashboard
+        ProxyPassReverse http://localhost:3000/dashboard
+    </Location>
+
+    # Proxy for Swagger UI with optional Basic Auth
+    <Location /swagger>
+        $( [ -n "$SWAGGER_USERNAME" ] && echo "AuthType Basic" )
+        $( [ -n "$SWAGGER_USERNAME" ] && echo "AuthName \"WAHA Swagger UI\"" )
+        $( [ -n "$SWAGGER_USERNAME" ] && echo "AuthUserFile $SWAGGER_HTPASSWD_FILE" )
+        $( [ -n "$SWAGGER_USERNAME" ] && echo "Require valid-user" )
+        # Optional: IP Whitelisting (uncomment and replace with your IP if needed)
+        # Require ip YOUR_IP_ADDRESS
+        ProxyPass http://localhost:3000/swagger
+        ProxyPassReverse http://localhost:3000/swagger
+    </Location>
+
+    # Proxy for WebSocket connections
+    <Location /ws>
+        ProxyPass ws://localhost:3000/ws
+        ProxyPassReverse ws://localhost:3000/ws
+        # Keepalive for WebSockets
+        ProxyPreserveHost On
+        RewriteEngine On
+        RewriteCond %{HTTP:Upgrade} websocket [NC]
+        RewriteCond %{HTTP:Connection} upgrade [NC]
+        RewriteRule .* "ws://localhost:3000%{REQUEST_URI}" [P,L]
+    </Location>
+
+    # Security Headers (mod_headers must be enabled: a2enmod headers)
+    Header always set X-Frame-Options SAMEORIGIN
+    Header always set X-Content-Type-Options nosniff
+    Header always set X-XSS-Protection "1; mode=block"
+    Header always set Referrer-Policy "no-referrer-when-downgrade"
+    Header always set Strict-Transport-Security "max-age=15768000; includeSubDomains; preload"
+    # Content-Security-Policy: IMPORTANT: This can break websites if not properly configured.
+    Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self';"
+
+    # SSL Certificate configuration (Certbot will fill these after first run)
+    SSLCertificateFile /etc/letsencrypt/live/$SUBDOMAIN/fullchain.pem
+    SSLCertificateKeyFile /etc/letsencrypt/live/$SUBDOMAIN/privkey.pem
+    # This line might be automatically added or managed by Certbot, but good to include.
+    Include /etc/letsencrypt/options-ssl-apache.conf
+</VirtualHost>
+</IfModule>
 EOF
 
-# Link this global config file to Nginx's main config
-# Check if the line already exists in nginx.conf to avoid duplicates
-if ! grep -q "include $NGINX_CONF_D_DIR/waha_security_headers_and_rate_limits.conf;" /etc/nginx/nginx.conf; then
-    # Add include statement to the http block in nginx.conf
-    # This requires a bit of sed magic to insert inside the http block
-    sed -i '/^http {/a \ \ include /etc/nginx/conf.d/waha_security_headers_and_rate_limits.conf;' /etc/nginx/nginx.conf || die "Failed to add Nginx security headers include."
-fi
-
-
-# --- Configure Nginx for WAHA - Stage 1 (HTTP and Certbot Challenge) ---
-echo "--> Configuring Nginx for $SUBDOMAIN (Stage 1: HTTP and Certbot Challenge)..."
-NGINX_CONFIG_FILE="/etc/nginx/sites-available/$SUBDOMAIN"
-
-cat <<EOF > "$NGINX_CONFIG_FILE"
-server {
-    listen 80;
-    listen [::]:80;
-    server_name $SUBDOMAIN;
-
-    # Certbot challenge path
-    location /.well-known/acme-challenge/ {
-        root /var/www/certbot;
-    }
-
-    # Redirect all HTTP traffic to HTTPS (temporary, will be updated after cert)
-    location / {
-        return 301 https://\$host\$request_uri;
-    }
-}
-EOF
-
-# Enable the Nginx site by creating a symlink
-ln -sf "$NGINX_CONFIG_FILE" /etc/nginx/sites-enabled/ || die "Failed to create Nginx symlink." # Use -sf to force symlink update if it exists
-
-# Test Nginx configuration for syntax errors
-nginx -t || die "Nginx configuration test failed. Please check the config file."
-systemctl reload nginx || die "Failed to reload Nginx. Check logs for details."
-echo "Nginx Stage 1 configured. Proceeding to obtain SSL certificate..."
+# Enable the Apache site and disable the default one
+a2ensite "$SUBDOMAIN" || die "Failed to enable Apache site."
+a2dissite 000-default || true # Disable default Apache site if it exists
+systemctl reload apache2 || die "Failed to reload Apache2. Check logs for details."
+echo "Apache configured. Proceeding to obtain SSL certificate..."
 
 # --- Obtain Let's Encrypt SSL Certificate ---
 echo "--> Obtaining Let's Encrypt SSL certificate for $SUBDOMAIN..."
 # Create a dummy webroot for certbot initial challenge
-mkdir -p /var/www/certbot
-chmod -R 755 /var/www/certbot
+mkdir -p /var/www/html/.well-known/acme-challenge
+chown -R www-data:www-data /var/www/html # Ensure Apache can access this
+chmod -R 755 /var/www/html/.well-known/acme-challenge
 
-# Run Certbot to get and install the SSL certificate
-# --no-redirect is important so Certbot doesn't automatically add a redirect to 443 here,
-# we will add the full 443 block later.
-certbot --nginx -d "$SUBDOMAIN" --non-interactive --agree-tos -m "$EMAIL" --no-redirect || die "Failed to obtain SSL certificate. Please ensure your DNS is correctly set up for $SUBDOMAIN and try again."
+# Run Certbot to get and install the SSL certificate using the Apache plugin
+certbot --apache -d "$SUBDOMAIN" --non-interactive --agree-tos -m "$EMAIL" --redirect || die "Failed to obtain SSL certificate. Please ensure your DNS is correctly set up for $SUBDOMAIN and try again."
 
-echo "SSL certificate obtained. Updating Nginx for HTTPS proxy..."
+echo "SSL certificate obtained and configured for Apache."
+systemctl reload apache2 || die "Failed to reload Apache2 after SSL. Check logs for details."
 
-# --- Configure Nginx for WAHA - Stage 2 (HTTPS with Proxy Pass and Basic Auth) ---
-# Now that Certbot has run and created the necessary SSL files,
-# we can update the Nginx config to include the HTTPS block and proxy passes.
-cat <<EOF > "$NGINX_CONFIG_FILE"
-server {
-    listen 80;
-    listen [::]:80;
-    server_name $SUBDOMAIN;
-
-    # Certbot challenge path
-    location /.well-known/acme-challenge/ {
-        root /var/www/certbot;
-    }
-
-    # Deny access to hidden files like .htpasswd or .env
-    location ~ /\. {
-        deny all;
-        access_log off;
-        log_not_found off;
-    }
-
-    # Redirect all HTTP traffic to HTTPS
-    location / {
-        return 301 https://\$host\$request_uri;
-    }
-}
-
-server {
-    listen 443 ssl;
-    listen [::]:443 ssl;
-    server_name $SUBDOMAIN;
-
-    http2 on; # Explicitly enable HTTP/2 if desired
-
-    # SSL certificate paths generated by Certbot
-    ssl_certificate /etc/letsencrypt/live/$SUBDOMAIN/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$SUBDOMAIN/privkey.pem;
-
-    # Recommended SSL settings from Certbot (this file should now exist)
-    include /etc/letsencrypt/options-ssl-nginx.conf;
-    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
-
-    # Main API endpoint
-    location / {
-        limit_req zone=api_req_limit burst=50 nodelay; # Apply rate limiting
-        # Optional: IP Whitelisting (uncomment and replace with your IP if needed)
-        # allow YOUR_IP_ADDRESS;
-        # deny all;
-
-        proxy_pass http://localhost:3000;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        # Increase timeouts for potentially long-running WAHA operations
-        proxy_read_timeout 900;
-        proxy_send_timeout 900;
-        proxy_connect_timeout 900;
-        send_timeout 900;
-    }
-
-    # Proxy for Dashboard with optional Basic Auth
-    location /dashboard {
-        limit_req zone=dashboard_req_limit burst=50 nodelay; # Apply rate limiting
-        # Basic authentication for dashboard if username was provided
-        $( [ -n "$DASHBOARD_USERNAME" ] && echo "auth_basic \"WAHA Dashboard\";" )
-        $( [ -n "$DASHBOARD_USERNAME" ] && echo "auth_basic_user_file $DASHBOARD_HTPASSWD_FILE;" )
-        # Optional: IP Whitelisting (uncomment and replace with your IP if needed)
-        # allow YOUR_IP_ADDRESS;
-        # deny all;
-
-        proxy_pass http://localhost:3000/dashboard;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-
-    # Proxy for Swagger UI with optional Basic Auth
-    location /swagger {
-        limit_req zone=dashboard_req_limit burst=50 nodelay; # Use dashboard rate limit for Swagger too
-        # Basic authentication for swagger if username was provided
-        $( [ -n "$SWAGGER_USERNAME" ] && echo "auth_basic \"WAHA Swagger UI\";" )
-        $( [ -n "$SWAGGER_USERNAME" ] && echo "auth_basic_user_file $SWAGGER_HTPASSWD_FILE;" )
-        # Optional: IP Whitelisting (uncomment and replace with your IP if needed)
-        # allow YOUR_IP_ADDRESS;
-        # deny all;
-
-        proxy_pass http://localhost:3000/swagger;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-}
-EOF
-
-# Test Nginx configuration for syntax errors after full config
-nginx -t || die "Nginx final configuration test failed. Please check the config file."
-systemctl reload nginx || die "Failed to reload Nginx after final SSL/proxy config. Check logs for details."
-echo "Nginx fully configured with SSL, proxy passes, rate limiting, and security headers."
-
-
-# --- Configure Fail2Ban ---
-echo "--> Configuring Fail2Ban for Nginx protection..."
-FAIL2BAN_JAIL_FILE="/etc/fail2ban/jail.d/nginx-waha.conf"
+# --- Configure Fail2Ban for Apache protection ---
+echo "--> Configuring Fail2Ban for Apache protection..."
+FAIL2BAN_JAIL_FILE="/etc/fail2ban/jail.d/apache-waha.conf"
 
 cat <<EOF > "$FAIL2BAN_JAIL_FILE"
-[nginx-http-auth]
+[apache-auth]
 enabled = true
 port = http,https
-filter = nginx-http-auth
-logpath = /var/log/nginx/access.log
-maxretry = 10
-bantime = 1800 ; 30 minutes
-findtime = 600  ; 10 minutes
+filter = apache-auth
+logpath = /var/log/apache2/error.log
+maxretry = 10    ; Ban after 10 failed authentication attempts
+bantime = 1800   ; Ban for 30 minutes (1800 seconds)
+findtime = 600   ; Look for failures within 10 minutes (600 seconds)
 
-[nginx-req-limit]
+[apache-noscript]
 enabled = true
 port = http,https
-filter = nginx-req-limit
-logpath = /var/log/nginx/error.log
+filter = apache-noscript
+logpath = /var/log/apache2/error.log
 maxretry = 10
-bantime = 1800 ; 30 minutes
-findtime = 600  ; 10 minutes
-EOF
+bantime = 1800
+findtime = 600
 
-# Add Nginx filters for Fail2Ban if they don't exist
-# For http-auth failures
-if [ ! -f "/etc/fail2ban/filter.d/nginx-http-auth.conf" ]; then
-cat <<'EOF' > "/etc/fail2ban/filter.d/nginx-http-auth.conf"
-[Definition]
-failregex = ^<HOST> -.* " (GET|POST|HEAD|PUT|DELETE|OPTIONS) .* HTTP/\d\.\d" 401 \d+ ".*" ".*"$
-ignoreregex =
+# You may add other Apache-related jails here if needed, e.g., apache-badbots, apache-overflows
 EOF
-fi
-
-# For rate limit violations (these usually appear in error.log)
-if [ ! -f "/etc/fail2ban/filter.d/nginx-req-limit.conf" ]; then
-cat <<'EOF' > "/etc/fail2ban/filter.d/nginx-req-limit.conf"
-[Definition]
-failregex = ^\s*\[error\] \d+#\d+: \(#\d+\) *limiting requests, excess: \d\.\d+ by zone ".*", client: <HOST>
-ignoreregex =
-EOF
-fi
 
 systemctl enable fail2ban || die "Failed to enable Fail2Ban service."
 systemctl restart fail2ban || die "Failed to restart Fail2Ban service. Check logs for details."
@@ -414,7 +351,7 @@ services:
     restart: always
     ports:
       # Map container port 3000 to host port 3000.
-      # Nginx will proxy requests to this host port.
+      # Apache will proxy requests to this host port.
       - "3000:3000"
     environment:
 $WAHA_ENV_VARS
@@ -453,7 +390,9 @@ fi
 
 echo ""
 echo "Important Notes for Secure Access:"
-echo "- Your instance is now protected with Nginx Basic Authentication for Dashboard/Swagger, API Key for the main API, Nginx Rate Limiting, Security Headers, and Fail2Ban."
+echo "- Your instance is now protected with Apache Basic Authentication for Dashboard/Swagger, API Key for the main API, Security Headers, and Fail2Ban."
+echo "- **Important for Dashboard/Swagger:** Even with Apache basic authentication, if you chose WAHA Core (or ARM Core), the WAHA application itself does not serve content at /dashboard or /swagger. You will see a blank page after login as the backend provides no content. These interfaces require WAHA Plus."
+echo "- Rate limiting in Apache is typically achieved with modules like mod_qos, which are more complex than Nginx's built-in options and are not included in this script to prevent initial access issues. Consider adding them if needed for high traffic scenarios."
 echo "- If you are getting a '500 Internal Server Error' after authentication, this likely means"
 echo "  the WAHA Docker container is not running or is experiencing an internal error."
 echo "  To debug this, navigate to the WAHA installation directory and check the container logs:"
@@ -461,8 +400,8 @@ echo "  cd $WAHA_INSTALL_DIR"
 echo "  docker compose logs -f waha"
 echo "  Look for error messages within the WAHA logs to pinpoint the issue."
 echo "- If you get blocked by Fail2Ban, you can unban your IP (replace YOUR_IP) with:"
-echo "  sudo fail2ban-client set nginx-http-auth unbanip YOUR_IP"
-echo "  sudo fail2ban-client set nginx-req-limit unbanip YOUR_IP"
+echo "  sudo fail2ban-client set apache-auth unbanip YOUR_IP"
+echo "  sudo fail2ban-client set apache-noscript unbanip YOUR_IP"
 echo "- To check Fail2Ban status: sudo fail2ban-client status"
 echo "- To flush your local DNS cache if access issues persist, refer to your OS instructions."
 echo "- WAHA data is persisted in '$WAHA_INSTALL_DIR/data'."
