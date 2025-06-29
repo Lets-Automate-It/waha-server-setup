@@ -2,7 +2,8 @@
 
 # This script automates the installation of WAHA (WhatsApp Automation Tool) on an Ubuntu DigitalOcean VPS.
 # It sets up Docker, Docker Compose, Nginx as a reverse proxy, and secures it with Let's Encrypt SSL.
-# The user will be prompted for their subdomain, email, desired WAHA version, and a secure API key.
+# The user will be prompted for their subdomain, email, desired WAHA version.
+# A strong API key will be automatically generated.
 
 # --- Configuration Variables ---
 WAHA_INSTALL_DIR="/opt/waha"
@@ -52,19 +53,23 @@ read -p "Enter 1, 2, or 3: " WAHA_CHOICE
 WAHA_IMAGE=""
 WAHA_TYPE=""
 case "$WAHA_CHOICE" in
-    1) WAHA_IMAGE="devlike.pro/waha-core:latest"; WAHA_TYPE="WAHA Core";;
-    2) WAHA_IMAGE="devlike.pro/waha-plus:latest"; WAHA_TYPE="WAHA Plus";;
-    3) WAHA_IMAGE="devlike.pro/waha-arm:latest"; WAHA_TYPE="WAHA ARM";;
+    1) WAHA_IMAGE="devlikeapro/waha:latest"; WAHA_TYPE="WAHA Core";;
+    2) WAHA_IMAGE="devlikeapro/waha-plus:latest"; WAHA_TYPE="WAHA Plus";;
+    3) WAHA_IMAGE="devlikeapro/waha:arm"; WAHA_TYPE="WAHA ARM (Core)";;
     *) die "Invalid choice. Please choose 1, 2, or 3. Exiting.";;
 esac
 
 echo "You chose to install $WAHA_TYPE."
 echo ""
-echo "Please generate a strong API key for WAHA. You can use 'openssl rand -base64 32' in another terminal to generate one."
-read -p "Enter your desired WAHA API Key: " WAHA_API_KEY
+
+# --- Auto-generate a strong API key ---
+echo "--> Automatically generating a strong WAHA API Key..."
+WAHA_API_KEY=$(openssl rand -base64 32)
 if [ -z "$WAHA_API_KEY" ]; then
-    die "API Key cannot be empty. Exiting."
+    die "Failed to auto-generate API Key. Exiting."
 fi
+echo "Generated API Key: $WAHA_API_KEY"
+echo ""
 
 echo ""
 echo "Starting installation for $SUBDOMAIN with $WAHA_TYPE and email $EMAIL..."
@@ -269,3 +274,4 @@ echo "- To check WAHA logs: 'cd $WAHA_INSTALL_DIR && docker compose logs -f'"
 echo "- To stop/start/restart WAHA: 'cd $WAHA_INSTALL_DIR && docker compose stop/start/restart'"
 echo "- For enhanced security, consider setting DASHBOARD_USERNAME, DASHBOARD_PASSWORD, SWAGGER_USERNAME, and SWAGGER_PASSWORD in your docker-compose.yml file. Edit '$WAHA_INSTALL_DIR/docker-compose.yml' and then run 'docker compose up -d'."
 echo "----------------------------------------------------"
+
