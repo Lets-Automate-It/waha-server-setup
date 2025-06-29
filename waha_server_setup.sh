@@ -320,6 +320,9 @@ EOF
 echo "--> Starting WAHA containers using Docker Compose..."
 docker compose up -d || die "Failed to start WAHA containers. Check 'docker compose logs -f' for errors."
 
+# Add a short delay to allow the container to start and initialize
+sleep 10 # Wait for 10 seconds
+
 echo ""
 echo "----------------------------------------------------"
 echo "WAHA Installation Complete!"
@@ -344,7 +347,12 @@ fi
 echo ""
 echo "Important Notes:"
 echo "- Ensure your DNS A/AAAA records for $SUBDOMAIN are correctly pointing to this VPS's IP address."
+echo "- If you are getting a '500 Internal Server Error' after authentication, this likely means"
+echo "  the WAHA Docker container is not running or is experiencing an internal error."
+echo "  To debug this, navigate to the WAHA installation directory and check the container logs:"
+echo "  cd $WAHA_INSTALL_DIR"
+echo "  docker compose logs -f waha_container"
+echo "  Look for error messages within the WAHA logs to pinpoint the issue."
 echo "- WAHA data is persisted in '$WAHA_INSTALL_DIR/data'."
-echo "- To check WAHA logs: 'cd $WAHA_INSTALL_DIR && docker compose logs -f'"
 echo "- To stop/start/restart WAHA: 'cd $WAHA_INSTALL_DIR && docker compose stop/start/restart'"
 echo "----------------------------------------------------"
