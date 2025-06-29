@@ -440,8 +440,9 @@ certbot --apache -d "$SUBDOMAIN" --non-interactive --agree-tos -m "$EMAIL" --red
 echo "SSL certificate obtained. Updating Apache for HTTPS proxy and enhanced security..."
 
 # --- Configure Apache Virtual Host for WAHA - Stage 2 (HTTPS with Proxy Pass and Basic Auth) ---
-# Create a more maintainable template-based approach
-TEMP_APACHE_CONFIG=$(mktemp)
+# Instead of trying to inject into the existing file, we'll rebuild the entire HTTPS VirtualHost
+
+echo "--> Configuring Apache Virtual Host for WAHA (Stage 2: HTTPS with Proxy Pass and Basic Auth)..."
 
 # Build proxy configuration for monitoring if enabled
 MONITORING_PROXY=""
@@ -456,12 +457,51 @@ if [ "$ENABLE_MONITORING" = "y" ]; then
     </Location>"
 fi
 
-# Create the enhanced Apache configuration
-cat <<EOF > "$TEMP_APACHE_CONFIG"
+# Get the SSL certificate paths from the existing configuration
+SSL_CERT_FILE=$(grep "SSLCertificateFile" "$APACHE_CONF_FILE" | head -1 | awk '{print $2}')
+SSL_CERT_KEY_FILE=$(grep "SSLCertificateKeyFile" "$APACHE_CONF_FILE" | head -1 | awk '{print $2}')
+SSL_INCLUDE=$(grep "Include" "$APACHE_CONF_FILE" | grep "options-ssl-apache.conf" | head -1)
+
+# If we can't find the SSL files, use the default Let's Encrypt paths
+if [ -z "$SSL_CERT_FILE" ]; then
+    SSL_CERT_FILE="/etc/letsencrypt/live/$SUBDOMAIN/fullchain.pem"
+fi
+if [ -z "$SSL_CERT_KEY_FILE" ]; then
+    SSL_CERT_KEY_FILE="/etc/letsencrypt/live/$SUBDOMAIN/privkey.pem"
+fi
+if [ -z "$SSL_INCLUDE" ]; then
+    SSL_INCLUDE="Include /etc/letsencrypt/options-ssl-apache.conf"
+fi
+
+# Create the complete Apache configuration
+cat <<EOF > "$APACHE_CONF_FILE"
+<VirtualHost *:80>
+    ServerName $SUBDOMAIN
+    DocumentRoot /var/www/html
+
+    # Deny access to sensitive files (like .htpasswd)
+    <Files ".ht*">
+        Require all denied
+    </Files>
+
+    # Redirect all HTTP traffic to HTTPS
+    RewriteEngine On
+    RewriteCond %{HTTPS} off
+    RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+</VirtualHost>
+
+<VirtualHost *:443>
+    ServerName $SUBDOMAIN
+    
+    # SSL Configuration
+    SSLCertificateFile $SSL_CERT_FILE
+    SSLCertificateKeyFile $SSL_CERT_KEY_FILE
+    $SSL_INCLUDE
+    
     # Proxy settings
     ProxyRequests Off
     ProxyPreserveHost On
-    ProxyTimeout 900 # Increase timeout for long-running operations
+    ProxyTimeout 900
 
     # Main API endpoint (no basic auth here)
     ProxyPass / http://localhost:$WAHA_PORT/
@@ -469,24 +509,20 @@ cat <<EOF > "$TEMP_APACHE_CONFIG"
 
     # Proxy for Dashboard with optional Basic Auth
     <Location /dashboard>
-        $( [ -n "$DASHBOARD_USERNAME" ] && echo "AuthType Basic" )
-        $( [ -n "$DASHBOARD_USERNAME" ] && echo "AuthName \"WAHA Dashboard\"" )
-        $( [ -n "$DASHBOARD_USERNAME" ] && echo "AuthUserFile $DASHBOARD_HTPASSWD_FILE" )
-        $( [ -n "$DASHBOARD_USERNAME" ] && echo "Require valid-user" )
-        # Optional: IP Whitelisting (uncomment and replace with your IP if needed)
-        # For example: Require ip YOUR_IP_ADDRESS
+$([ -n "$DASHBOARD_USERNAME" ] && echo "        AuthType Basic")
+$([ -n "$DASHBOARD_USERNAME" ] && echo "        AuthName \"WAHA Dashboard\"")
+$([ -n "$DASHBOARD_USERNAME" ] && echo "        AuthUserFile $DASHBOARD_HTPASSWD_FILE")
+$([ -n "$DASHBOARD_USERNAME" ] && echo "        Require valid-user")
         ProxyPass http://localhost:$WAHA_PORT/dashboard
         ProxyPassReverse http://localhost:$WAHA_PORT/dashboard
     </Location>
 
     # Proxy for Swagger UI with optional Basic Auth
     <Location /swagger>
-        $( [ -n "$SWAGGER_USERNAME" ] && echo "AuthType Basic" )
-        $( [ -n "$SWAGGER_USERNAME" ] && echo "AuthName \"WAHA Swagger UI\"" )
-        $( [ -n "$SWAGGER_USERNAME" ] && echo "AuthUserFile $SWAGGER_HTPASSWD_FILE" )
-        $( [ -n "$SWAGGER_USERNAME" ] && echo "Require valid-user" )
-        # Optional: IP Whitelisting (uncomment and replace with your IP if needed)
-        # For example: Require ip YOUR_IP_ADDRESS
+$([ -n "$SWAGGER_USERNAME" ] && echo "        AuthType Basic")
+$([ -n "$SWAGGER_USERNAME" ] && echo "        AuthName \"WAHA Swagger UI\"")
+$([ -n "$SWAGGER_USERNAME" ] && echo "        AuthUserFile $SWAGGER_HTPASSWD_FILE")
+$([ -n "$SWAGGER_USERNAME" ] && echo "        Require valid-user")
         ProxyPass http://localhost:$WAHA_PORT/swagger
         ProxyPassReverse http://localhost:$WAHA_PORT/swagger
     </Location>
@@ -495,8 +531,6 @@ cat <<EOF > "$TEMP_APACHE_CONFIG"
     <Location /ws>
         ProxyPass ws://localhost:$WAHA_PORT/ws
         ProxyPassReverse ws://localhost:$WAHA_PORT/ws
-        # Keepalive for WebSockets
-        # ProxyPreserveHost On # Already set globally
         RewriteEngine On
         RewriteCond %{HTTP:Upgrade} websocket [NC]
         RewriteCond %{HTTP:Connection} upgrade [NC]
@@ -504,14 +538,19 @@ cat <<EOF > "$TEMP_APACHE_CONFIG"
     </Location>
 $MONITORING_PROXY
 
-    # Security Headers (mod_headers must be enabled)
+    # Security Headers
     Header always set X-Frame-Options SAMEORIGIN
     Header always set X-Content-Type-Options nosniff
     Header always set X-XSS-Protection "1; mode=block"
     Header always set Referrer-Policy "no-referrer-when-downgrade"
     Header always set Strict-Transport-Security "max-age=15768000; includeSubDomains; preload"
-    # Content-Security-Policy: IMPORTANT: This can break websites if not properly configured.
     Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self';"
+
+    # Deny access to sensitive files
+    <Files ".ht*">
+        Require all denied
+    </Files>
+</VirtualHost>
 EOF
 
 # Inject the generated configuration into the Certbot-modified HTTPS VirtualHost
