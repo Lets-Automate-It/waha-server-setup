@@ -1,136 +1,172 @@
-# WAHA Server Automated Setup
+# WAHA Server Automated Setup Script
 
-This repository contains an automated setup script for deploying a complete WAHA (WhatsApp HTTP API) server with security features, SSL certificates, and monitoring.
+This repository contains an automated setup script for deploying a complete WAHA (WhatsApp HTTP API) server with essential security features and SSL certificates.
 
 ## What This Script Does
 
-The script automatically sets up:
+The script automates the setup of:
 
-- ✅ **WAHA (WhatsApp HTTP API)** - Latest version with Docker
-- ✅ **SSL/TLS Encryption** - Let's Encrypt certificates
-- ✅ **Nginx Reverse Proxy** - With security headers and rate limiting
-- ✅ **HTTP Basic Authentication** - For dashboard and API docs
-- ✅ **Fail2ban Protection** - Against brute force attacks
-- ✅ **Firewall Configuration** - UFW with proper ports
-- ✅ **Auto-generated Secure Credentials** - API keys and passwords
-- ✅ **Complete Documentation** - Quick reference guide
+- ✅ **WAHA (WhatsApp HTTP API)** - Deploys the latest WAHA version using Docker Compose.
+- ✅ **SSL/TLS Encryption** - Automatically obtains and configures Let's Encrypt certificates for secure HTTPS access.
+- ✅ **Nginx Reverse Proxy** - Sets up Nginx to act as a reverse proxy, handling incoming web traffic and securely forwarding it to the WAHA Docker container.
+- ✅ **Firewall Configuration** - Configures UFW (Uncomplicated Firewall) to allow only essential traffic (SSH, HTTP, HTTPS).
+- ✅ **Auto-generated Secure Credentials** - Generates strong, random passwords for the WAHA Dashboard, Swagger UI, and the WAHA API Key.
 
 ## Requirements
 
-- Ubuntu 22.04+ server
-- Root or sudo access
-- Domain name pointing to your server IP
-- Valid email address for SSL certificate
+* **Operating System:** Ubuntu 20.04 LTS or newer (or any Debian-based distribution).
+* **Server Access:** Root access or `sudo` privileges.
+* **Domain Name:** A registered domain name (or subdomain) that you want to use for your WAHA server (e.g., `api.yourdomain.com`).
+* **DNS A Record:** **Crucially**, ensure that the A record for your chosen domain/subdomain points to the public IP address of the server where you will run this script. Certbot needs this to verify domain ownership.
 
 ## Quick Start
 
-### 1. Download and Run the Script
+### 1. Prepare Your Server
+
+* **Update System:**
+    ```bash
+    sudo apt update && sudo apt upgrade -y
+    ```
+* **Install Git (if not already installed):**
+    ```bash
+    sudo apt install git -y
+    ```
+
+### 2. Download the Script
 
 ```bash
-# Download the script
-wget https://raw.githubusercontent.com/YOUR_USERNAME/waha-server-setup/main/waha_server_setup.sh
+git clone [https://github.com/Lets-Automate-It/waha-server-setup.git](https://github.com/Lets-Automate-It/waha-server-setup.git)
+cd waha-server-setup
+chmod +x waha_setup.sh
+````
 
-# Make it executable
-chmod +x waha_server_setup.sh
+### 3\. Run the Setup Script
 
-# Run as root
-sudo ./waha_server_setup.sh
+Execute the script with `sudo`:
+
+```bash
+sudo ./waha_setup.sh
 ```
 
-### 2. Follow the Interactive Prompts
+The script will guide you through the following interactive prompts:
 
-The script will ask you for:
-- Your domain name (e.g., `api.yourdomain.com`)
-- Your email address (for SSL certificate)
-- Dashboard username (default: `waha_admin`)
+  * **Domain Name:** Enter your full domain name (e.g., `api.yourdomain.com`). This will be used for Nginx and SSL.
+  * **Email Address:** Provide a valid email for Let's Encrypt certificate registration and expiry notifications.
+  * **Dashboard Username:** (Optional) Set a custom username for the WAHA dashboard (default: `waha_admin`).
 
-### 3. Save the Generated Credentials
+### 4\. Save the Generated Credentials
 
-The script will generate secure credentials. **Save these immediately!**
+The script will auto-generate and display secure credentials for the **WAHA Dashboard, Swagger UI, and the API Key**. **Save these immediately in a secure place\! You will need them to access your WAHA instance.** The script will pause until you confirm you've saved them.
+
+### 5\. Installation Process
+
+After inputting details and saving credentials, the script will proceed with the automated installation steps:
+
+  * Updating system packages.
+  * Installing essential tools (curl, wget, git, nano, ufw, certbot).
+  * Configuring the UFW firewall (allowing SSH, HTTP, HTTPS).
+  * Installing Docker and Docker Compose.
+  * Installing Nginx and setting up the reverse proxy configuration for your domain.
+  * Deploying the WAHA Docker containers.
+  * **Obtaining and configuring your SSL certificate** from Let's Encrypt via Certbot.
 
 ## What You'll Get
 
-After successful installation:
+After successful installation, your WAHA server will be accessible via HTTPS:
 
 ### Access URLs
-- **Main API**: `https://yourdomain.com/`
-- **Dashboard**: `https://yourdomain.com/dashboard/`
-- **API Documentation**: `https://yourdomain.com/docs`
+* **Main API Endpoint**: `https://api.yourdomain.com/` (Example for a subdomain setup)
+* **WAHA Dashboard**: `https://api.yourdomain.com/dashboard` (Example for a subdomain setup)
+* **Swagger UI (API Documentation)**: `https://api.yourdomain.com/swagger` (Example for a subdomain setup)
+
+### Credentials
+
+The script will output the following at the end, which you should have already saved:
+
+  * **Dashboard Username:** (your chosen or default `waha_admin`)
+  * **Dashboard Password:** (auto-generated)
+  * **Swagger Username:** `swagger_admin`
+  * **Swagger Password:** (auto-generated)
+  * **API Key:** (auto-generated)
 
 ### Security Features
-- SSL/TLS encryption with auto-renewal
-- HTTP Basic Authentication for sensitive areas
-- API key authentication for endpoints
-- Fail2ban protection against attacks
-- Security headers (HSTS, XSS protection, etc.)
-- Firewall configuration
 
-### Files Created
-- Configuration: `/root/waha/.env`
-- Quick Reference: `/root/waha/WAHA_QUICK_REFERENCE.md`
-- Nginx Config: `/etc/nginx/sites-available/waha-secure`
+  * SSL/TLS encryption for all traffic with auto-renewal (via Certbot).
+  * WAHA's built-in Dashboard and Swagger UI are protected by the credentials generated.
+  * WAHA's API endpoints require the generated API key for authentication.
+  * The firewall is configured to only expose necessary services.
+
+### File Locations
+
+  * **WAHA Application Data:** `/opt/waha/` (contains `docker-compose.yaml`, `.env`, and WAHA session/media data)
+  * **Nginx Configuration:** `/etc/nginx/sites-available/your_domain.com` (symlinked to `sites-enabled`)
 
 ## Quick Commands
 
-After installation, you can manage your WAHA server with these commands:
+After installation, you can manage your WAHA server using these commands (navigate to `/opt/waha` first):
 
 ```bash
-# Check WAHA status
-cd /root/waha && docker compose ps
+cd /opt/waha
 
-# View WAHA logs
-docker compose logs waha --tail 20
+# Check WAHA container status
+docker compose ps
 
-# Restart WAHA
-docker compose restart
+# View WAHA logs (streaming)
+docker compose logs -f waha
 
-# Update WAHA
-docker compose pull && docker compose up -d
+# Restart WAHA service
+docker compose restart waha
+
+# Update WAHA to the latest image
+docker compose pull waha && docker compose up -d waha
 ```
 
 ## Troubleshooting
 
 ### Common Issues
 
-1. **Domain not resolving**: Ensure your DNS A record points to your server IP
-2. **SSL certificate failed**: Check that your domain is accessible on port 80
-3. **Can't access dashboard**: Verify you're using the correct credentials
-4. **WAHA container not starting**: Check logs with `docker compose logs waha`
+1.  **Domain not resolving**: Ensure your DNS A record for `your_domain.com` correctly points to your server's public IP address. DNS changes can take some time to propagate.
+2.  **SSL certificate failed**:
+      * Verify your DNS A record is correctly set.
+      * Ensure your domain is accessible on port 80 from the internet (check firewall).
+      * Review Certbot logs: `cat /var/log/letsencrypt/letsencrypt.log`
+3.  **Can't access dashboard/API**:
+      * Verify you're using the correct generated credentials.
+      * Ensure Nginx is running (`sudo systemctl status nginx`).
+      * Check Nginx configuration: `sudo nginx -t` and `sudo cat /etc/nginx/sites-available/your_domain.com`
+      * Check Nginx error logs: `sudo tail -f /var/log/nginx/error.log`
+      * Check WAHA Docker logs: `cd /opt/waha && docker compose logs -f waha`
+4.  **WAHA container not starting**:
+      * Check Docker Compose logs: `cd /opt/waha && docker compose logs -f waha`
+      * Ensure Docker is running (`sudo systemctl status docker`).
 
 ### Getting Help
 
-- Check the generated quick reference guide: `/root/waha/WAHA_QUICK_REFERENCE.md`
-- View WAHA logs: `cd /root/waha && docker compose logs waha`
-- Check system logs: `journalctl -u nginx` or `journalctl -u fail2ban`
+  * View WAHA logs: `cd /opt/waha && docker compose logs -f waha`
+  * Check Nginx service status: `sudo systemctl status nginx`
+  * Check Certbot logs: `sudo cat /var/log/letsencrypt/letsencrypt.log`
+  * **WAHA Documentation**: `https://waha.devlike.pro/docs/`
+  * **Docker Documentation**: `https://docs.docker.com/`
+  * **Nginx Documentation**: `https://nginx.org/en/docs/`
 
 ## Security Notes
 
-- 🔒 All passwords are auto-generated and secure
-- 🔒 Dashboard and API docs are protected with HTTP Basic Auth
-- 🔒 API endpoints require API key authentication
-- 🔒 Fail2ban monitors and blocks suspicious activity
-- 🔒 SSL certificates auto-renew every 90 days
-- 🔒 Security headers are configured in Nginx
+  * 🔒 All sensitive passwords are auto-generated and secure.
+  * 🔒 SSL certificates are automatically obtained and renewed via Let's Encrypt.
+  * 🔒 WAHA's dashboard and API are protected by credentials.
+  * 🔒 The firewall is configured to expose only necessary services.
 
 ## Manual Configuration
 
-For advanced users who want to customize the installation, refer to the complete installation guide that includes:
-
-- Custom password setup
-- Advanced security configuration
-- Monitoring setup
-- Backup procedures
-
-## Support
-
-- **WAHA Documentation**: https://waha.devlike.pro/docs/
-- **Docker Documentation**: https://docs.docker.com/
-- **Nginx Documentation**: https://nginx.org/en/docs/
+This script provides a streamlined setup. For advanced users who want to customize further (e.g., integrating additional security layers like Fail2ban, custom basic auth via Nginx, or different WAHA configurations), you will need to manually adjust the generated files after the script completes.
 
 ## License
 
 This script is provided as-is for educational and production use. Please review and test in a non-production environment first.
 
----
+-----
 
-**⚠️ Important**: This script installs production-ready software with security features. Always backup your data and test in a development environment first.
+**⚠️ Important**: This script installs production-ready software with security features. Always ensure your DNS A record is correctly set before running, and review generated credentials carefully.
+
+```
+```
