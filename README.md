@@ -23,10 +23,6 @@ The script automates the setup of:
 
 ### 1. Prepare Your Server
 
-* **Update System:**
-    ```bash
-    sudo apt update && sudo apt upgrade -y
-    ```
 * **Install Git (if not already installed):**
     ```bash
     sudo apt install git -y
