@@ -37,7 +37,7 @@ The script automates the setup of:
 ```bash
 git clone https://github.com/Lets-Automate-It/waha-server-setup.git
 cd waha-server-setup
-chmod +x waha_setup.sh
+chmod +x waha_server_setup.sh
 ````
 
 ### 3\. Run the Setup Script
@@ -45,7 +45,7 @@ chmod +x waha_setup.sh
 Execute the script with `sudo`:
 
 ```bash
-sudo ./waha_setup.sh
+sudo ./waha_server_setup.sh
 ```
 
 The script will guide you through the following interactive prompts:
