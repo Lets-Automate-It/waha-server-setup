@@ -1,168 +1,174 @@
-# WAHA Server Automated Setup Script
+WAHA Automated Installation Script (Apache)
+This script automates the deployment of a WAHA (WhatsApp HTTP API) instance on an Ubuntu DigitalOcean VPS, using Apache as a reverse proxy and securing it with Let's Encrypt SSL. It's designed to streamline the setup process, incorporating various security best practices.
 
-This repository contains an automated setup script for deploying a complete WAHA (WhatsApp HTTP API) server with essential security features and SSL certificates.
+Table of Contents
+Features
 
-## What This Script Does
+Prerequisites
 
-The script automates the setup of:
+How to Use
 
-- ✅ **WAHA (WhatsApp HTTP API)** - Deploys the latest WAHA version using Docker Compose.
-- ✅ **SSL/TLS Encryption** - Automatically obtains and configures Let's Encrypt certificates for secure HTTPS access.
-- ✅ **Nginx Reverse Proxy** - Sets up Nginx to act as a reverse proxy, handling incoming web traffic and securely forwarding it to the WAHA Docker container.
-- ✅ **Firewall Configuration** - Configures UFW (Uncomplicated Firewall) to allow only essential traffic (SSH, HTTP, HTTPS).
-- ✅ **Auto-generated Secure Credentials** - Generates strong, random passwords for the WAHA Dashboard, Swagger UI, and the WAHA API Key.
+Script Prompts
 
-## Requirements
+Access Details
 
-* **Operating System:** Ubuntu 20.04 LTS or newer (or any Debian-based distribution).
-* **Server Access:** Root access or `sudo` privileges.
-* **Domain Name:** A registered domain name (or subdomain) that you want to use for your WAHA server (e.g., `api.yourdomain.com`).
-* **DNS A Record:** **Crucially**, ensure that the A record for your chosen domain/subdomain points to the public IP address of the server where you will run this script. Certbot needs this to verify domain ownership.
+Security Measures Implemented
 
-## Quick Start
+Troubleshooting & Management
 
-### 1. Prepare Your Server
+Important Notes
 
-* **Install Git (if not already installed):**
-    ```bash
-    sudo apt install git -y
-    ```
+Features
+Automated Installation: Installs Docker, Docker Compose, Apache2, Certbot, and Fail2Ban.
 
-### 2. Download the Script
+WAHA Version Selection: Allows choosing between WAHA Core, WAHA Plus, or WAHA ARM.
 
-```bash
-git clone https://github.com/Lets-Automate-It/waha-server-setup.git
+Subdomain & SSL Setup: Configures Apache for your specified subdomain and obtains a Let's Encrypt SSL certificate for HTTPS.
+
+Auto-generated API Key: Automatically generates a strong API key for WAHA.
+
+Apache Basic Authentication: Secures the WAHA Dashboard and Swagger UI with optional HTTP Basic Authentication (username/password prompts). This applies regardless of the chosen WAHA version, protecting these web interfaces via Apache.
+
+Security Headers: Implements various security headers (HSTS, X-Frame-Options, X-Content-Type-Options, X-XSS-Protection, Referrer-Policy, Content-Security-Policy) to harden your Apache server.
+
+Fail2Ban Integration: Configures Fail2Ban to monitor Apache logs for failed authentication attempts and excessive requests, automatically banning malicious IPs.
+
+Docker Compose Deployment: Sets up WAHA as a Docker container using docker compose for easy management and persistence.
+
+Nginx Uninstallation: Includes a step to detect and uninstall Nginx if it was previously installed, preventing port conflicts.
+
+Prerequisites
+A fresh Ubuntu 20.04+ DigitalOcean VPS (or any similar Ubuntu server).
+
+DNS records for your subdomain (e.g., waha.yourdomain.com) must be correctly pointing to your VPS's IP address BEFORE running this script.
+
+How to Use
+SSH into your DigitalOcean Droplet:
+
+ssh your_user@your_droplet_ip
+
+(Replace your_user and your_droplet_ip with your actual login details.)
+
+Install Git (if not already installed):
+
+sudo apt update
+sudo apt install git -y
+
+Clone this GitHub Repository:
+
+cd ~
+git clone https://github.com/Lets-Automate-It/waha-server-setup.git # Replace with your actual repo URL if different
+
+(If your repository is private, you will be prompted for your GitHub username and Personal Access Token.)
+
+Navigate into the cloned directory:
+
 cd waha-server-setup
+
+Make the script executable:
+
 chmod +x waha_server_setup.sh
-````
 
-### 3\. Run the Setup Script
+Run the script:
 
-Execute the script with `sudo`:
-
-```bash
 sudo ./waha_server_setup.sh
-```
 
-The script will guide you through the following interactive prompts:
+The script will then guide you through the setup process with interactive prompts.
 
-  * **Domain Name:** Enter your full domain name (e.g., `api.yourdomain.com`). This will be used for Nginx and SSL.
-  * **Email Address:** Provide a valid email for Let's Encrypt certificate registration and expiry notifications.
-  * **Dashboard Username:** (Optional) Set a custom username for the WAHA dashboard (default: `waha_admin`).
+Script Prompts
+During execution, the script will ask for:
 
-### 4\. Save the Generated Credentials
+Your Subdomain: The domain name where WAHA will be accessible (e.g., waha.example.com).
 
-The script will auto-generate and display secure credentials for the **WAHA Dashboard, Swagger UI, and the API Key**. **Save these immediately in a secure place\! You will need them to access your WAHA instance.** The script will pause until you confirm you've saved them.
+Your Email Address: Used by Let's Encrypt for SSL certificate registration and urgent notices.
 
-### 5\. Installation Process
+WAHA Version Choice:
 
-After inputting details and saving credentials, the script will proceed with the automated installation steps:
+WAHA Core (Free, open-source)
 
-  * Updating system packages.
-  * Installing essential tools (curl, wget, git, nano, ufw, certbot).
-  * Configuring the UFW firewall (allowing SSH, HTTP, HTTPS).
-  * Installing Docker and Docker Compose.
-  * Installing Nginx and setting up the reverse proxy configuration for your domain.
-  * Deploying the WAHA Docker containers.
-  * **Obtaining and configuring your SSL certificate** from Let's Encrypt via Certbot.
+WAHA Plus (Commercial, advanced features)
 
-## What You'll Get
+WAHA ARM (For ARM-based architectures like Raspberry Pi)
 
-After successful installation, your WAHA server will be accessible via HTTPS:
+Dashboard Username (Optional): A username for HTTP Basic Authentication for the /dashboard interface. Leave empty to skip.
 
-### Access URLs
-* **Main API Endpoint**: `https://api.yourdomain.com/` (Example for a subdomain setup)
-* **WAHA Dashboard**: `https://api.yourdomain.com/dashboard` (Example for a subdomain setup)
-* **Swagger UI (API Documentation)**: `https://api.yourdomain.com/swagger` (Example for a subdomain setup)
+Dashboard Password (Optional): A password if a Dashboard username was provided.
 
-### Credentials
+Swagger Username (Optional): A username for HTTP Basic Authentication for the /swagger interface. Leave empty to skip.
 
-The script will output the following at the end, which you should have already saved:
+Swagger Password (Optional): A password if a Swagger username was provided.
 
-  * **Dashboard Username:** (your chosen or default `waha_admin`)
-  * **Dashboard Password:** (auto-generated)
-  * **Swagger Username:** `swagger_admin`
-  * **Swagger Password:** (auto-generated)
-  * **API Key:** (auto-generated)
+Access Details
+Upon successful completion, the script will output:
 
-### Security Features
+WAHA Instance URL: https://your_subdomain
 
-  * SSL/TLS encryption for all traffic with auto-renewal (via Certbot).
-  * WAHA's built-in Dashboard and Swagger UI are protected by the credentials generated.
-  * WAHA's API endpoints require the generated API key for authentication.
-  * The firewall is configured to only expose necessary services.
+API Documentation (Swagger): https://your_subdomain/swagger
 
-### File Locations
+Your WAHA API Key: The auto-generated key to be used for API requests.
 
-  * **WAHA Application Data:** `/opt/waha/` (contains `docker-compose.yaml`, `.env`, and WAHA session/media data)
-  * **Nginx Configuration:** `/etc/nginx/sites-available/your_domain.com` (symlinked to `sites-enabled`)
+Dashboard Basic Auth Credentials: (If set) Username and Password for the /dashboard interface.
 
-## Quick Commands
+Swagger UI Basic Auth Credentials: (If set) Username and Password for the /swagger interface.
 
-After installation, you can manage your WAHA server using these commands (navigate to `/opt/waha` first):
+Security Measures Implemented
+Apache Basic Authentication: Secure login for /dashboard and /swagger paths, protecting these web interfaces.
 
-```bash
+API Key Authentication: The main / API endpoint is secured by the API_KEY passed to the WAHA container.
+
+Let's Encrypt SSL/TLS: All traffic is encrypted using free SSL certificates from Let's Encrypt.
+
+HTTP to HTTPS Redirection: All HTTP requests are automatically redirected to HTTPS.
+
+Firewall (UFW): Configured to only allow essential ports (SSH, HTTP, HTTPS).
+
+Apache Security Headers: Implements X-Frame-Options, X-Content-Type-Options, X-XSS-Protection, Referrer-Policy, Strict-Transport-Security (HSTS), and a basic Content-Security-Policy.
+
+Sensitive File Protection: Apache configuration includes rules to deny access to hidden files (.ht*) like .htpasswd.
+
+Fail2Ban: Monitors Apache logs for:
+
+apache-auth: Failed HTTP Basic Authentication attempts.
+
+apache-noscript: Attempts to execute scripts where they shouldn't.
+
+Automatically bans malicious IPs for 30 minutes after 10 failed attempts within 10 minutes.
+
+Troubleshooting & Management
+Blank Page After Dashboard/Swagger Login (Core Versions): If you chose WAHA Core or WAHA ARM (Core), the Dashboard and Swagger UI are not part of the application itself. Apache's basic authentication will work, but the backend will serve no content, leading to a blank page. These interfaces require WAHA Plus.
+
+500 Internal Server Error: This usually means the WAHA Docker container is not running or is encountering an internal error.
+
+To debug:
+
 cd /opt/waha
-
-# Check WAHA container status
-docker compose ps
-
-# View WAHA logs (streaming)
 docker compose logs -f waha
 
-# Restart WAHA service
-docker compose restart waha
+Look for error messages within the WAHA logs.
 
-# Update WAHA to the latest image
-docker compose pull waha && docker compose up -d waha
-```
+Blocked by Fail2Ban: If your IP gets banned due to too many failed attempts or rate limit violations, you can unban it (replace YOUR_IP with your actual IP address):
 
-## Troubleshooting
+sudo fail2ban-client set apache-auth unbanip YOUR_IP
+sudo fail2ban-client set apache-noscript unbanip YOUR_IP
 
-### Common Issues
+Check Fail2Ban Status:
 
-1.  **Domain not resolving**: Ensure your DNS A record for `your_domain.com` correctly points to your server's public IP address. DNS changes can take some time to propagate.
-2.  **SSL certificate failed**:
-      * Verify your DNS A record is correctly set.
-      * Ensure your domain is accessible on port 80 from the internet (check firewall).
-      * Review Certbot logs: `cat /var/log/letsencrypt/letsencrypt.log`
-3.  **Can't access dashboard/API**:
-      * Verify you're using the correct generated credentials.
-      * Ensure Nginx is running (`sudo systemctl status nginx`).
-      * Check Nginx configuration: `sudo nginx -t` and `sudo cat /etc/nginx/sites-available/your_domain.com`
-      * Check Nginx error logs: `sudo tail -f /var/log/nginx/error.log`
-      * Check WAHA Docker logs: `cd /opt/waha && docker compose logs -f waha`
-4.  **WAHA container not starting**:
-      * Check Docker Compose logs: `cd /opt/waha && docker compose logs -f waha`
-      * Ensure Docker is running (`sudo systemctl status docker`).
+sudo fail2ban-client status
 
-### Getting Help
+Flush Local DNS Cache: If you experience access issues despite successful installation, try clearing your browser cache or flushing your local machine's DNS cache.
 
-  * View WAHA logs: `cd /opt/waha && docker compose logs -f waha`
-  * Check Nginx service status: `sudo systemctl status nginx`
-  * Check Certbot logs: `sudo cat /var/log/letsencrypt/letsencrypt.log`
-  * **WAHA Documentation**: `https://waha.devlike.pro/docs/`
-  * **Docker Documentation**: `https://docs.docker.com/`
-  * **Nginx Documentation**: `https://nginx.org/en/docs/`
+WAHA Data Persistence: WAHA data (sessions, etc.) is persisted in the /opt/waha/data directory on your VPS.
 
-## Security Notes
+Managing WAHA Containers:
 
-  * 🔒 All sensitive passwords are auto-generated and secure.
-  * 🔒 SSL certificates are automatically obtained and renewed via Let's Encrypt.
-  * 🔒 WAHA's dashboard and API are protected by credentials.
-  * 🔒 The firewall is configured to expose only necessary services.
+cd /opt/waha
+docker compose stop    # To stop WAHA
+docker compose start   # To start WAHA
+docker compose down    # To stop and remove containers/networks/volumes
 
-## Manual Configuration
+Important Notes
+This script provides a strong foundation for security, but no system is 100% impervious to attack. Regularly update your system (sudo apt update && sudo apt upgrade -y) and monitor logs.
 
-This script provides a streamlined setup. For advanced users who want to customize further (e.g., integrating additional security layers like Fail2ban, custom basic auth via Nginx, or different WAHA configurations), you will need to manually adjust the generated files after the script completes.
+The Content-Security-Policy header provided is a basic example. Depending on future WAHA updates or any custom integrations, you may need to adjust this policy to allow specific external resources (e.g., Google Fonts, external JavaScript libraries). Monitor your browser's developer console for CSP errors.
 
-## License
-
-This script is provided as-is for educational and production use. Please review and test in a non-production environment first.
-
------
-
-**⚠️ Important**: This script installs production-ready software with security features. Always ensure your DNS A record is correctly set before running, and review generated credentials carefully.
-
-```
-```
+Apache's built-in rate limiting capabilities (e.g., with mod_qos) are more complex than Nginx's limit_req and are not included in this script to simplify the initial setup and avoid potential over-blocking. For high-traffic production environments, consider researching and implementing advanced Apache rate limiting.
