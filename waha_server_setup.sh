@@ -204,8 +204,13 @@ cat <<EOF > "$APACHE_CONF_FILE"
 </VirtualHost>
 EOF
 
+# Restart Apache2 to ensure it picks up the new config file before a2ensite
+echo "--> Restarting Apache2 to register new site configuration..."
+systemctl restart apache2 || die "Failed to restart Apache2 after creating Stage 1 config. Check logs."
+
 # Enable the Apache site and disable the default one
-a2ensite "$SUBDOMAIN" || die "Failed to enable Apache site."
+echo "--> Enabling site $SUBDOMAIN and disabling 000-default..."
+a2ensite "$SUBDOMAIN" || die "Failed to enable Apache site. Check Apache logs for details: systemctl status apache2.service"
 a2dissite 000-default || true # Disable default Apache site if it exists
 systemctl reload apache2 || die "Failed to reload Apache2. Check logs for details."
 echo "Apache Stage 1 configured. Proceeding to obtain SSL certificate..."
