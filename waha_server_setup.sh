@@ -286,6 +286,13 @@ echo "--> Creating WAHA Docker Compose setup in $WAHA_INSTALL_DIR..."
 mkdir -p "$WAHA_INSTALL_DIR" || die "Failed to create WAHA install directory."
 cd "$WAHA_INSTALL_DIR" || die "Failed to change to WAHA install directory."
 
+# Determine the correct healthcheck URL based on WAHA_TYPE
+WAHA_HEALTHCHECK_URL="http://localhost:3000/health" # Default for Plus
+if [[ "$WAHA_TYPE" == "WAHA Core" || "$WAHA_TYPE" == "WAHA ARM (Core)" ]]; then
+    WAHA_HEALTHCHECK_URL="http://localhost:3000/" # Use root for Core versions
+fi
+
+
 # Start building the environment variables for Docker Compose
 WAHA_ENV_VARS="      - BASE_URL=https://$SUBDOMAIN
       - API_KEY=$WAHA_API_KEY"
@@ -295,8 +302,6 @@ WAHA_ENV_VARS="      - BASE_URL=https://$SUBDOMAIN
 
 # Create the docker-compose.yml file for WAHA
 cat <<EOF > docker-compose.yml
-version: '3.8'
-
 services:
   waha:
     image: $WAHA_IMAGE
@@ -311,17 +316,14 @@ $WAHA_ENV_VARS
     volumes:
       - ./data:/app/data # Persist WAHA data to a local 'data' directory
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      test: ["CMD", "curl", "-f", "$WAHA_HEALTHCHECK_URL"]
       interval: 30s
       timeout: 10s
       retries: 5
 EOF
 
 echo "--> Starting WAHA containers using Docker Compose..."
-docker compose up -d || die "Failed to start WAHA containers. Check 'docker compose logs -f' for errors."
-
-# Add a short delay to allow the container to start and initialize
-sleep 10 # Wait for 10 seconds
+docker compose up -d || die "Failed to start WAHA containers. Check 'docker compose logs -f waha' for errors."
 
 echo ""
 echo "----------------------------------------------------"
@@ -351,7 +353,7 @@ echo "- If you are getting a '500 Internal Server Error' after authentication, t
 echo "  the WAHA Docker container is not running or is experiencing an internal error."
 echo "  To debug this, navigate to the WAHA installation directory and check the container logs:"
 echo "  cd $WAHA_INSTALL_DIR"
-echo "  docker compose logs -f waha_container"
+echo "  docker compose logs -f waha"
 echo "  Look for error messages within the WAHA logs to pinpoint the issue."
 echo "- WAHA data is persisted in '$WAHA_INSTALL_DIR/data'."
 echo "- To stop/start/restart WAHA: 'cd $WAHA_INSTALL_DIR && docker compose stop/start/restart'"
