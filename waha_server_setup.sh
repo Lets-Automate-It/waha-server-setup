@@ -209,7 +209,9 @@ echo "--> Enabling site $SUBDOMAIN and disabling 000-default..."
 a2ensite "$SUBDOMAIN" || die "Failed to enable Apache site. Check Apache logs for details: systemctl status apache2.service"
 a2dissite 000-default || true # Disable default Apache site if it exists
 
-# IMPORTANT: Reload Apache *after* enabling the site, so it picks up the new config
+# IMPORTANT: Test and Reload Apache *after* enabling the site, so it picks up the new config
+echo "--> Testing Apache configuration before final reload..."
+apachectl configtest || die "Apache configuration test failed after site enablement. Check error logs."
 systemctl reload apache2 || die "Failed to reload Apache2 after enabling sites. Check logs for details."
 echo "Apache Stage 1 configured. Proceeding to obtain SSL certificate..."
 
@@ -416,3 +418,4 @@ echo "- To check Fail2Ban status: sudo fail2ban-client status"
 echo "- To flush your local DNS cache if access issues persist, refer to your OS instructions."
 echo "- WAHA data is persisted in '$WAHA_INSTALL_DIR/data'."
 echo "- To stop/start/restart WAHA: 'cd $WAHA_INSTALL_DIR && docker compose stop/start/restart'"
+echo "----------------------------------------------------"
