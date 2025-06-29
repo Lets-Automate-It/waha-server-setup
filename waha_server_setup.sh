@@ -4,6 +4,7 @@
 # It sets up Docker, Docker Compose, Nginx as a reverse proxy, and secures it with Let's Encrypt SSL.
 # The user will be prompted for their subdomain, email, desired WAHA version.
 # A strong API key will be automatically generated.
+# Optional dashboard and Swagger UI access credentials can also be set.
 
 # --- Configuration Variables ---
 WAHA_INSTALL_DIR="/opt/waha"
@@ -70,6 +71,25 @@ if [ -z "$WAHA_API_KEY" ]; then
 fi
 echo "Generated API Key: $WAHA_API_KEY"
 echo ""
+
+# --- Get Dashboard and Swagger UI Credentials (Optional) ---
+read -p "Set a username for WAHA Dashboard (leave empty for no dashboard basic auth): " DASHBOARD_USERNAME
+if [ -n "$DASHBOARD_USERNAME" ]; then
+    read -s -p "Set a password for WAHA Dashboard: " DASHBOARD_PASSWORD
+    echo "" # Add a newline after silent password input
+    if [ -z "$DASHBOARD_PASSWORD" ]; then
+        die "Dashboard password cannot be empty if username is set. Exiting."
+    fi
+fi
+
+read -p "Set a username for WAHA Swagger UI (leave empty for no Swagger basic auth): " SWAGGER_USERNAME
+if [ -n "$SWAGGER_USERNAME" ]; then
+    read -s -p "Set a password for WAHA Swagger UI: " SWAGGER_PASSWORD
+    echo "" # Add a newline after silent password input
+    if [ -z "$SWAGGER_PASSWORD" ]; then
+        die "Swagger password cannot be empty if username is set. Exiting."
+    fi
+fi
 
 echo ""
 echo "Starting installation for $SUBDOMAIN with $WAHA_TYPE and email $EMAIL..."
@@ -225,6 +245,25 @@ echo "--> Creating WAHA Docker Compose setup in $WAHA_INSTALL_DIR..."
 mkdir -p "$WAHA_INSTALL_DIR" || die "Failed to create WAHA install directory."
 cd "$WAHA_INSTALL_DIR" || die "Failed to change to WAHA install directory."
 
+# Start building the environment variables for Docker Compose
+WAHA_ENV_VARS="      - BASE_URL=https://$SUBDOMAIN
+      - API_KEY=$WAHA_API_KEY"
+
+# Add Dashboard credentials if provided
+if [ -n "$DASHBOARD_USERNAME" ]; then
+    WAHA_ENV_VARS+="
+      - DASHBOARD_USERNAME=$DASHBOARD_USERNAME
+      - DASHBOARD_PASSWORD=$DASHBOARD_PASSWORD"
+fi
+
+# Add Swagger credentials if provided
+if [ -n "$SWAGGER_USERNAME" ]; then
+    WAHA_ENV_VARS+="
+      - SWAGGER_USERNAME=$SWAGGER_USERNAME
+      - SWAGGER_PASSWORD=$SWAGGER_PASSWORD"
+fi
+
+
 # Create the docker-compose.yml file for WAHA
 cat <<EOF > docker-compose.yml
 version: '3.8'
@@ -239,14 +278,7 @@ services:
       # Nginx will proxy requests to this host port.
       - "3000:3000"
     environment:
-      # WAHA configuration variables
-      - BASE_URL=https://$SUBDOMAIN
-      - API_KEY=$WAHA_API_KEY
-      # Uncomment and set strong credentials for Dashboard and Swagger if you want to protect them with basic auth.
-      # - DASHBOARD_USERNAME=admin
-      # - DASHBOARD_PASSWORD=your_dashboard_password
-      # - SWAGGER_USERNAME=swagger
-      # - SWAGGER_PASSWORD=your_swagger_password
+$WAHA_ENV_VARS
     volumes:
       - ./data:/app/data # Persist WAHA data to a local 'data' directory
     healthcheck:
@@ -267,11 +299,23 @@ echo "Your WAHA instance should now be accessible at: https://$SUBDOMAIN"
 echo "The API documentation (Swagger) should be at: https://$SUBDOMAIN/swagger"
 echo "Your chosen API Key for WAHA is: $WAHA_API_KEY"
 echo ""
+
+if [ -n "$DASHBOARD_USERNAME" ]; then
+    echo "Dashboard Credentials:"
+    echo "  Username: $DASHBOARD_USERNAME"
+    echo "  Password: $DASHBOARD_PASSWORD"
+fi
+
+if [ -n "$SWAGGER_USERNAME" ]; then
+    echo "Swagger UI Credentials:"
+    echo "  Username: $SWAGGER_USERNAME"
+    echo "  Password: $SWAGGER_PASSWORD"
+fi
+
+echo ""
 echo "Important Notes:"
 echo "- Ensure your DNS A/AAAA records for $SUBDOMAIN are correctly pointing to this VPS's IP address."
 echo "- WAHA data is persisted in '$WAHA_INSTALL_DIR/data'."
 echo "- To check WAHA logs: 'cd $WAHA_INSTALL_DIR && docker compose logs -f'"
 echo "- To stop/start/restart WAHA: 'cd $WAHA_INSTALL_DIR && docker compose stop/start/restart'"
-echo "- For enhanced security, consider setting DASHBOARD_USERNAME, DASHBOARD_PASSWORD, SWAGGER_USERNAME, and SWAGGER_PASSWORD in your docker-compose.yml file. Edit '$WAHA_INSTALL_DIR/docker-compose.yml' and then run 'docker compose up -d'."
 echo "----------------------------------------------------"
-
