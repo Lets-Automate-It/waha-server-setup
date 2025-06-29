@@ -399,7 +399,7 @@ echo "--> Configuring Apache Virtual Host for $SUBDOMAIN (Stage 1: HTTP and Cert
 cat <<EOF > "$APACHE_CONF_FILE"
 <VirtualHost *:80>
     ServerName $SUBDOMAIN
-    DocumentRoot /var/www/html # Certbot expects this for challenges
+    DocumentRoot /var/www/html
 
     # Deny access to sensitive files (like .htpasswd)
     <Files ".ht*">
