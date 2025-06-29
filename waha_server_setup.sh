@@ -5,11 +5,13 @@
 # The user will be prompted for their subdomain, email, desired WAHA version.
 # A strong API key will be automatically generated.
 # Dashboard and Swagger UI access will be secured with Nginx basic authentication, regardless of WAHA version.
+# Additional security measures including Nginx rate limiting, security headers, and Fail2Ban will be configured.
 
 # --- Configuration Variables ---
 WAHA_INSTALL_DIR="/opt/waha"
 DOCKER_COMPOSE_VERSION="v2.20.2" # A recent stable version of Docker Compose
 HTPASSWD_DIR="/etc/nginx/conf.d" # Directory to store .htpasswd files
+NGINX_CONF_D_DIR="/etc/nginx/conf.d" # Directory for additional Nginx configs
 
 # --- Functions ---
 
@@ -102,11 +104,8 @@ echo "----------------------------------------------------"
 # --- Update System and Install Prerequisites ---
 echo "--> Updating system and installing prerequisites..."
 apt update -y || die "Failed to update package lists."
-apt install -y apt-transport-https ca-certificates curl software-properties-common ufw || die "Failed to install prerequisites."
-
-# --- Install apache2-utils for htpasswd ---
-echo "--> Installing apache2-utils for htpasswd..."
-apt install -y apache2-utils || die "Failed to install apache2-utils."
+# Added fail2ban to prerequisites
+apt install -y apt-transport-https ca-certificates curl software-properties-common ufw apache2-utils fail2ban || die "Failed to install prerequisites."
 
 # --- Configure UFW Firewall ---
 echo "--> Configuring UFW firewall..."
@@ -149,10 +148,50 @@ fi
 
 if [ -n "$SWAGGER_USERNAME" ]; then
     echo "Creating .htpasswd for Swagger UI..."
-    # Use -c only for first entry, -b for subsequent entries (if adding to same file)
-    # Here we create a separate file for Swagger
     htpasswd -cb "$SWAGGER_HTPASSWD_FILE" "$SWAGGER_USERNAME" "$SWAGGER_PASSWORD" || die "Failed to create swagger .htpasswd file."
     chmod 640 "$SWAGGER_HTPASSWD_FILE" # Secure permissions
+fi
+
+# --- Configure Nginx Rate Limiting Zones and Security Headers ---
+echo "--> Configuring Nginx global security settings and rate limiting zones..."
+mkdir -p "$NGINX_CONF_D_DIR" || die "Failed to create Nginx conf.d directory."
+
+# Create a file for global Nginx settings (rate limiting zones, security headers)
+cat <<EOF > "$NGINX_CONF_D_DIR/waha_security_headers_and_rate_limits.conf"
+# Rate limiting zones (located in http context, so define in /etc/nginx/conf.d/)
+# Limit dashboard/swagger requests to 100 requests per second, with a burst of 50.
+# This allows for a burst of requests (e.g., loading multiple JS files) but limits sustained rate.
+limit_req_zone \$binary_remote_addr zone=dashboard_req_limit:10m rate=100r/s;
+# Limit main API requests to 50 requests per second, with a burst of 50.
+limit_req_zone \$binary_remote_addr zone=api_req_limit:10m rate=50r/s;
+
+# Optional: Limit concurrent connections per IP
+# limit_conn_zone \$binary_remote_addr zone=conn_limit:10m;
+
+# Global Security Headers
+add_header X-Frame-Options SAMEORIGIN always;
+add_header X-Content-Type-Options nosniff always;
+add_header X-XSS-Protection "1; mode=block" always;
+add_header Referrer-Policy "no-referrer-when-downgrade" always;
+# Strict-Transport-Security (HSTS)
+# This header ensures that the browser only communicates with the server over HTTPS,
+# preventing MITM attacks. Max-age typically 6 months to 2 years.
+add_header Strict-Transport-Security "max-age=15768000; includeSubDomains; preload" always;
+# Content-Security-Policy: IMPORTANT: This can break websites if not properly configured.
+# This policy is a basic one that allows content from the same origin ('self') and
+# allows inline styles ('unsafe-inline') which are common for dashboards.
+# You might need to adjust this based on specific external resources or inline scripts
+# used by WAHA's dashboard/swagger.
+# For example, if it uses Google Fonts, you'd need to add 'fonts.googleapis.com' to font-src.
+add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self';" always;
+EOF
+
+# Link this global config file to Nginx's main config
+# Check if the line already exists in nginx.conf to avoid duplicates
+if ! grep -q "include $NGINX_CONF_D_DIR/waha_security_headers_and_rate_limits.conf;" /etc/nginx/nginx.conf; then
+    # Add include statement to the http block in nginx.conf
+    # This requires a bit of sed magic to insert inside the http block
+    sed -i '/^http {/a \ \ include /etc/nginx/conf.d/waha_security_headers_and_rate_limits.conf;' /etc/nginx/nginx.conf || die "Failed to add Nginx security headers include."
 fi
 
 
@@ -213,6 +252,13 @@ server {
         root /var/www/certbot;
     }
 
+    # Deny access to hidden files like .htpasswd or .env
+    location ~ /\. {
+        deny all;
+        access_log off;
+        log_not_found off;
+    }
+
     # Redirect all HTTP traffic to HTTPS
     location / {
         return 301 https://\$host\$request_uri;
@@ -234,9 +280,13 @@ server {
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 
-    # Proxy requests to the WAHA Docker container (typically on port 3000)
-    # This is the main API endpoint, no basic auth here.
+    # Main API endpoint
     location / {
+        limit_req zone=api_req_limit burst=50 nodelay; # Apply rate limiting
+        # Optional: IP Whitelisting (uncomment and replace with your IP if needed)
+        # allow YOUR_IP_ADDRESS;
+        # deny all;
+
         proxy_pass http://localhost:3000;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -251,9 +301,14 @@ server {
 
     # Proxy for Dashboard with optional Basic Auth
     location /dashboard {
+        limit_req zone=dashboard_req_limit burst=50 nodelay; # Apply rate limiting
         # Basic authentication for dashboard if username was provided
         $( [ -n "$DASHBOARD_USERNAME" ] && echo "auth_basic \"WAHA Dashboard\";" )
         $( [ -n "$DASHBOARD_USERNAME" ] && echo "auth_basic_user_file $DASHBOARD_HTPASSWD_FILE;" )
+        # Optional: IP Whitelisting (uncomment and replace with your IP if needed)
+        # allow YOUR_IP_ADDRESS;
+        # deny all;
+
         proxy_pass http://localhost:3000/dashboard;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -263,9 +318,14 @@ server {
 
     # Proxy for Swagger UI with optional Basic Auth
     location /swagger {
+        limit_req zone=dashboard_req_limit burst=50 nodelay; # Use dashboard rate limit for Swagger too
         # Basic authentication for swagger if username was provided
         $( [ -n "$SWAGGER_USERNAME" ] && echo "auth_basic \"WAHA Swagger UI\";" )
         $( [ -n "$SWAGGER_USERNAME" ] && echo "auth_basic_user_file $SWAGGER_HTPASSWD_FILE;" )
+        # Optional: IP Whitelisting (uncomment and replace with your IP if needed)
+        # allow YOUR_IP_ADDRESS;
+        # deny all;
+
         proxy_pass http://localhost:3000/swagger;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -278,7 +338,55 @@ EOF
 # Test Nginx configuration for syntax errors after full config
 nginx -t || die "Nginx final configuration test failed. Please check the config file."
 systemctl reload nginx || die "Failed to reload Nginx after final SSL/proxy config. Check logs for details."
-echo "Nginx fully configured with SSL and proxy passes."
+echo "Nginx fully configured with SSL, proxy passes, rate limiting, and security headers."
+
+
+# --- Configure Fail2Ban ---
+echo "--> Configuring Fail2Ban for Nginx protection..."
+FAIL2BAN_JAIL_FILE="/etc/fail2ban/jail.d/nginx-waha.conf"
+
+cat <<EOF > "$FAIL2BAN_JAIL_FILE"
+[nginx-http-auth]
+enabled = true
+port = http,https
+filter = nginx-http-auth
+logpath = /var/log/nginx/access.log
+maxretry = 10
+bantime = 1800 ; 30 minutes
+findtime = 600  ; 10 minutes
+
+[nginx-req-limit]
+enabled = true
+port = http,https
+filter = nginx-req-limit
+logpath = /var/log/nginx/error.log
+maxretry = 10
+bantime = 1800 ; 30 minutes
+findtime = 600  ; 10 minutes
+EOF
+
+# Add Nginx filters for Fail2Ban if they don't exist
+# For http-auth failures
+if [ ! -f "/etc/fail2ban/filter.d/nginx-http-auth.conf" ]; then
+cat <<'EOF' > "/etc/fail2ban/filter.d/nginx-http-auth.conf"
+[Definition]
+failregex = ^<HOST> -.* " (GET|POST|HEAD|PUT|DELETE|OPTIONS) .* HTTP/\d\.\d" 401 \d+ ".*" ".*"$
+ignoreregex =
+EOF
+fi
+
+# For rate limit violations (these usually appear in error.log)
+if [ ! -f "/etc/fail2ban/filter.d/nginx-req-limit.conf" ]; then
+cat <<'EOF' > "/etc/fail2ban/filter.d/nginx-req-limit.conf"
+[Definition]
+failregex = ^\s*\[error\] \d+#\d+: \(#\d+\) *limiting requests, excess: \d\.\d+ by zone ".*", client: <HOST>
+ignoreregex =
+EOF
+fi
+
+systemctl enable fail2ban || die "Failed to enable Fail2Ban service."
+systemctl restart fail2ban || die "Failed to restart Fail2Ban service. Check logs for details."
+echo "Fail2Ban configured and started."
 
 
 # --- Deploy WAHA with Docker Compose ---
@@ -296,9 +404,6 @@ fi
 # Start building the environment variables for Docker Compose
 WAHA_ENV_VARS="      - BASE_URL=https://$SUBDOMAIN
       - API_KEY=$WAHA_API_KEY"
-
-# Note: DASHBOARD_USERNAME/PASSWORD and SWAGGER_USERNAME/PASSWORD are no longer passed to WAHA container
-# as Nginx is now handling the basic authentication.
 
 # Create the docker-compose.yml file for WAHA
 cat <<EOF > docker-compose.yml
@@ -347,14 +452,19 @@ if [ -n "$SWAGGER_USERNAME" ]; then
 fi
 
 echo ""
-echo "Important Notes:"
-echo "- Ensure your DNS A/AAAA records for $SUBDOMAIN are correctly pointing to this VPS's IP address."
+echo "Important Notes for Secure Access:"
+echo "- Your instance is now protected with Nginx Basic Authentication for Dashboard/Swagger, API Key for the main API, Nginx Rate Limiting, Security Headers, and Fail2Ban."
 echo "- If you are getting a '500 Internal Server Error' after authentication, this likely means"
 echo "  the WAHA Docker container is not running or is experiencing an internal error."
 echo "  To debug this, navigate to the WAHA installation directory and check the container logs:"
 echo "  cd $WAHA_INSTALL_DIR"
 echo "  docker compose logs -f waha"
 echo "  Look for error messages within the WAHA logs to pinpoint the issue."
+echo "- If you get blocked by Fail2Ban, you can unban your IP (replace YOUR_IP) with:"
+echo "  sudo fail2ban-client set nginx-http-auth unbanip YOUR_IP"
+echo "  sudo fail2ban-client set nginx-req-limit unbanip YOUR_IP"
+echo "- To check Fail2Ban status: sudo fail2ban-client status"
+echo "- To flush your local DNS cache if access issues persist, refer to your OS instructions."
 echo "- WAHA data is persisted in '$WAHA_INSTALL_DIR/data'."
 echo "- To stop/start/restart WAHA: 'cd $WAHA_INSTALL_DIR && docker compose stop/start/restart'"
 echo "----------------------------------------------------"
