@@ -35,7 +35,7 @@ The script automates the setup of:
 ### 2. Download the Script
 
 ```bash
-git clone [https://github.com/Lets-Automate-It/waha-server-setup.git](https://github.com/Lets-Automate-It/waha-server-setup.git)
+git clone https://github.com/Lets-Automate-It/waha-server-setup.git
 cd waha-server-setup
 chmod +x waha_setup.sh
 ````
