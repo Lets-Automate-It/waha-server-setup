@@ -12,6 +12,7 @@ WAHA_INSTALL_DIR="/opt/waha"
 DOCKER_COMPOSE_VERSION="v2.20.2" # A recent stable version of Docker Compose
 # .htpasswd files for Apache will be stored in a secure location within Apache's conf
 APACHE_HTPASSWD_DIR="/etc/apache2/conf.d" # Directory to store .htpasswd files for Apache basic auth
+APACHE_CONF_FILE="/etc/apache2/sites-available/$SUBDOMAIN.conf" # Define it early for consistent usage
 
 # --- Functions ---
 
@@ -149,8 +150,8 @@ if dpkg -s nginx >/dev/null 2>&1; then
     apt autoremove -y || die "Failed to autoremove Nginx dependencies."
     rm -f /etc/nginx/sites-available/$SUBDOMAIN # Clean up old Nginx site config
     rm -f /etc/nginx/sites-enabled/$SUBDOMAIN
-    rm -f "$APACHE_HTPASSWD_DIR/waha_security_headers_and_rate_limits.conf" # Clean up global Nginx config
-    # Remove include from nginx.conf
+    rm -f "$APACHE_HTPASSWD_DIR/waha_security_headers_and_rate_limits.conf" # Clean up global Nginx config if it existed there
+    # Remove include from nginx.conf if it was added
     sed -i '/include \/etc\/nginx\/conf\.d\/waha_security_headers_and_rate_limits\.conf;/d' /etc/nginx/nginx.conf || true
     echo "Nginx uninstalled."
 else
@@ -182,41 +183,59 @@ if [ -n "$SWAGGER_USERNAME" ]; then
     chown root:www-data "$SWAGGER_HTPASSWD_FILE" # Ensure Apache can read it
 fi
 
-# --- Configure Apache Virtual Host for WAHA ---
-echo "--> Configuring Apache Virtual Host for $SUBDOMAIN..."
-APACHE_CONF_FILE="/etc/apache2/sites-available/$SUBDOMAIN.conf"
+
+# --- Configure Apache Virtual Host for WAHA - Stage 1 (HTTP and Certbot Challenge) ---
+echo "--> Configuring Apache Virtual Host for $SUBDOMAIN (Stage 1: HTTP and Certbot Challenge)..."
 
 cat <<EOF > "$APACHE_CONF_FILE"
 <VirtualHost *:80>
     ServerName $SUBDOMAIN
-    # DocumentRoot /var/www/html # Certbot uses this for challenges
-
-    # Certbot challenge path. Alias needed if not using DocumentRoot for challenges.
-    Alias /.well-known/acme-challenge/ /var/www/html/.well-known/acme-challenge/
-    <Directory /var/www/html/.well-known/acme-challenge/>
-        Options Indexes FollowSymLinks
-        AllowOverride None
-        Require all granted
-    </Directory>
-
-    RewriteEngine On
-    RewriteCond %{HTTPS} off
-    RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
-</VirtualHost>
-
-<IfModule mod_ssl.c>
-<VirtualHost *:443>
-    ServerName $SUBDOMAIN
-
-    # Proxy settings
-    ProxyRequests Off
-    ProxyPreserveHost On
-    ProxyTimeout 900 # Increase timeout for long-running operations
+    DocumentRoot /var/www/html # Certbot expects this for challenges
 
     # Deny access to sensitive files (like .htpasswd)
     <Files ".ht*">
         Require all denied
     </Files>
+
+    # Redirect all HTTP traffic to HTTPS
+    RewriteEngine On
+    RewriteCond %{HTTPS} off
+    RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [L,R=301]
+</VirtualHost>
+EOF
+
+# Enable the Apache site and disable the default one
+a2ensite "$SUBDOMAIN" || die "Failed to enable Apache site."
+a2dissite 000-default || true # Disable default Apache site if it exists
+systemctl reload apache2 || die "Failed to reload Apache2. Check logs for details."
+echo "Apache Stage 1 configured. Proceeding to obtain SSL certificate..."
+
+
+# --- Obtain Let's Encrypt SSL Certificate ---
+echo "--> Obtaining Let's Encrypt SSL certificate for $SUBDOMAIN..."
+# Create webroot directory for certbot challenges
+mkdir -p /var/www/html/.well-known/acme-challenge
+chown -R www-data:www-data /var/www/html # Ensure Apache can access this
+chmod -R 755 /var/www/html/.well-known/acme-challenge
+
+# Run Certbot to get and install the SSL certificate using the Apache plugin.
+# Certbot will automatically modify the Apache config to add the HTTPS block.
+certbot --apache -d "$SUBDOMAIN" --non-interactive --agree-tos -m "$EMAIL" --redirect || die "Failed to obtain SSL certificate. Please ensure your DNS is correctly set up for $SUBDOMAIN and try again."
+
+echo "SSL certificate obtained. Updating Apache for HTTPS proxy and enhanced security..."
+
+# --- Configure Apache Virtual Host for WAHA - Stage 2 (HTTPS with Proxy Pass and Basic Auth) ---
+# Certbot has already created the <VirtualHost *:443> block.
+# Now, we need to inject our proxy, basic auth, and security headers into that block.
+
+# Use a temporary file to build the new config for injection
+TEMP_APACHE_CONFIG=$(mktemp)
+
+cat <<EOF > "$TEMP_APACHE_CONFIG"
+    # Proxy settings
+    ProxyRequests Off
+    ProxyPreserveHost On
+    ProxyTimeout 900 # Increase timeout for long-running operations
 
     # Main API endpoint (no basic auth here)
     ProxyPass / http://localhost:3000/
@@ -229,7 +248,7 @@ cat <<EOF > "$APACHE_CONF_FILE"
         $( [ -n "$DASHBOARD_USERNAME" ] && echo "AuthUserFile $DASHBOARD_HTPASSWD_FILE" )
         $( [ -n "$DASHBOARD_USERNAME" ] && echo "Require valid-user" )
         # Optional: IP Whitelisting (uncomment and replace with your IP if needed)
-        # Require ip YOUR_IP_ADDRESS
+        # For example: Require ip YOUR_IP_ADDRESS
         ProxyPass http://localhost:3000/dashboard
         ProxyPassReverse http://localhost:3000/dashboard
     </Location>
@@ -241,7 +260,7 @@ cat <<EOF > "$APACHE_CONF_FILE"
         $( [ -n "$SWAGGER_USERNAME" ] && echo "AuthUserFile $SWAGGER_HTPASSWD_FILE" )
         $( [ -n "$SWAGGER_USERNAME" ] && echo "Require valid-user" )
         # Optional: IP Whitelisting (uncomment and replace with your IP if needed)
-        # Require ip YOUR_IP_ADDRESS
+        # For example: Require ip YOUR_IP_ADDRESS
         ProxyPass http://localhost:3000/swagger
         ProxyPassReverse http://localhost:3000/swagger
     </Location>
@@ -251,14 +270,14 @@ cat <<EOF > "$APACHE_CONF_FILE"
         ProxyPass ws://localhost:3000/ws
         ProxyPassReverse ws://localhost:3000/ws
         # Keepalive for WebSockets
-        ProxyPreserveHost On
+        # ProxyPreserveHost On # Already set globally
         RewriteEngine On
         RewriteCond %{HTTP:Upgrade} websocket [NC]
         RewriteCond %{HTTP:Connection} upgrade [NC]
         RewriteRule .* "ws://localhost:3000%{REQUEST_URI}" [P,L]
     </Location>
 
-    # Security Headers (mod_headers must be enabled: a2enmod headers)
+    # Security Headers (mod_headers must be enabled)
     Header always set X-Frame-Options SAMEORIGIN
     Header always set X-Content-Type-Options nosniff
     Header always set X-XSS-Protection "1; mode=block"
@@ -266,34 +285,22 @@ cat <<EOF > "$APACHE_CONF_FILE"
     Header always set Strict-Transport-Security "max-age=15768000; includeSubDomains; preload"
     # Content-Security-Policy: IMPORTANT: This can break websites if not properly configured.
     Header always set Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self';"
-
-    # SSL Certificate configuration (Certbot will fill these after first run)
-    SSLCertificateFile /etc/letsencrypt/live/$SUBDOMAIN/fullchain.pem
-    SSLCertificateKeyFile /etc/letsencrypt/live/$SUBDOMAIN/privkey.pem
-    # This line might be automatically added or managed by Certbot, but good to include.
-    Include /etc/letsencrypt/options-ssl-apache.conf
-</VirtualHost>
-</IfModule>
 EOF
 
-# Enable the Apache site and disable the default one
-a2ensite "$SUBDOMAIN" || die "Failed to enable Apache site."
-a2dissite 000-default || true # Disable default Apache site if it exists
-systemctl reload apache2 || die "Failed to reload Apache2. Check logs for details."
-echo "Apache configured. Proceeding to obtain SSL certificate..."
+# Inject the generated configuration into the Certbot-modified HTTPS VirtualHost
+# We look for the line "ServerName $SUBDOMAIN" inside the <VirtualHost *:443> block and insert after it.
+# This sed command is complex because it operates on a range and inserts multiline text.
+# It finds the first <VirtualHost *:443> block and inserts the content of $TEMP_APACHE_CONFIG after the ServerName line.
+sed -i "/<VirtualHost \*:443>/,/<\/VirtualHost>/ {
+    /ServerName $SUBDOMAIN/a\\
+$(sed -e 's/\\/\\\\/g' -e 's/\//\\\//g' -e '$!s/$/\\/' -e 's/$/\n/' "$TEMP_APACHE_CONFIG")
+}" "$APACHE_CONF_FILE" || die "Failed to inject proxy and security configurations into Apache VirtualHost."
 
-# --- Obtain Let's Encrypt SSL Certificate ---
-echo "--> Obtaining Let's Encrypt SSL certificate for $SUBDOMAIN..."
-# Create a dummy webroot for certbot initial challenge
-mkdir -p /var/www/html/.well-known/acme-challenge
-chown -R www-data:www-data /var/www/html # Ensure Apache can access this
-chmod -R 755 /var/www/html/.well-known/acme-challenge
+rm "$TEMP_APACHE_CONFIG" # Clean up temporary file
 
-# Run Certbot to get and install the SSL certificate using the Apache plugin
-certbot --apache -d "$SUBDOMAIN" --non-interactive --agree-tos -m "$EMAIL" --redirect || die "Failed to obtain SSL certificate. Please ensure your DNS is correctly set up for $SUBDOMAIN and try again."
+systemctl reload apache2 || die "Failed to reload Apache2 after SSL and proxy config. Check logs for details."
+echo "Apache fully configured with SSL, proxy passes, and security headers."
 
-echo "SSL certificate obtained and configured for Apache."
-systemctl reload apache2 || die "Failed to reload Apache2 after SSL. Check logs for details."
 
 # --- Configure Fail2Ban for Apache protection ---
 echo "--> Configuring Fail2Ban for Apache protection..."
