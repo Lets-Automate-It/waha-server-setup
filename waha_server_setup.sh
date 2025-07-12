@@ -48,7 +48,7 @@ validate_domain() {
     
     # Check DNS resolution
     log_message "Checking DNS resolution for $domain..."
-    if ! nslookup "$domain" &>/dev/null; then
+    if ! nslookup "$domain" &> /dev/null; then
         warn_message "DNS resolution failed for $domain"
         echo "This might cause SSL certificate issuance to fail."
         read -p "Do you want to continue anyway? (y/N): " -n 1 -r
@@ -117,6 +117,7 @@ install_docker() {
     docker run hello-world || error_exit "Docker installation failed. 'hello-world' test failed."
 
     # Add current user to docker group to run docker commands without sudo
+    # Fixed typo: usermerm -> usermod
     if [ -n "$SUDO_USER" ]; then
         usermod -aG docker "$SUDO_USER" || error_exit "Failed to add $SUDO_USER to docker group."
         log_message "Added $SUDO_USER to docker group."
@@ -269,7 +270,7 @@ verify_waha_running() {
     log_message "Verifying WAHA is running..."
     
     while [ $attempt -le $max_attempts ]; do
-        if curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$WAHA_PORT" | grep -q "200\|401\|403"; then
+        if curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$WAHA_PORT" | grep -q "200\\|401\\|403"; then
             log_message "WAHA is running successfully on port $WAHA_PORT"
             return 0
         fi
@@ -286,10 +287,10 @@ verify_waha_running() {
 show_usage() {
     echo "Usage: $0 [OPTIONS]"
     echo "Options:"
-    echo "  -d, --domain DOMAIN       Domain name (e.g., waha.yourdomain.com)"
-    echo "  -e, --email EMAIL         Email address for Let's Encrypt"
-    echo "  -i, --interactive         Run in interactive mode"
-    echo "  -h, --help                Show this help message"
+    echo "  -d, --domain DOMAIN     Domain name (e.g., waha.yourdomain.com)"
+    echo "  -e, --email EMAIL       Email address for Let's Encrypt"
+    echo "  -i, --interactive       Run in interactive mode"
+    echo "  -h, --help              Show this help message"
     echo ""
     echo "Examples:"
     echo "  $0 -d waha.example.com -e admin@example.com"
@@ -412,10 +413,13 @@ else
     sleep 5
 fi
 
-# 6. Install system dependencies
+# 5. Install system dependencies
 log_message "Installing system dependencies..."
 apt update || error_exit "Failed to update package list."
 apt install -y curl wget gnupg2 lsb-release net-tools || error_exit "Failed to install system dependencies."
+
+# 6. Install Git
+install_git
 
 # 7. Install Docker and Docker Compose
 install_docker
@@ -426,71 +430,66 @@ install_nginx
 # 9. Configure UFW
 configure_ufw
 
-# 10. Setup WAHA directory and configuration
-log_message "Setting up WAHA configuration..."
-# Remove existing WAHA directory if it exists to ensure a clean install
+# 10. Clone WAHA repository
+log_message "Cloning WAHA repository..."
 if [ -d "$WAHA_DIR" ]; then
     warn_message "WAHA directory already exists. Removing it..."
     rm -rf "$WAHA_DIR" || error_exit "Failed to remove existing WAHA directory."
 fi
 
 mkdir -p "$WAHA_DIR" || error_exit "Failed to create WAHA directory."
-
-# Clone WAHA repository
-log_message "Cloning WAHA repository into $WAHA_DIR..."
 git clone https://github.com/devlikeapro/waha.git "$WAHA_DIR" || error_exit "Failed to clone WAHA repository."
 cd "$WAHA_DIR" || error_exit "Failed to change directory to WAHA_DIR."
+log_message "WAHA repository cloned."
 
-# Modify the cloned docker-compose.yaml to use the 'latest' image
-log_message "Modifying docker-compose.yaml to use 'devlikeapro/waha:latest' image..."
-# Use a temporary file for sed to work correctly across different systems
-sed -i.bak 's|image: devlikeapro/waha|image: devlikeapro/waha:latest|g' docker-compose.yaml || error_exit "Failed to update docker-compose.yaml image."
-rm -f docker-compose.yaml.bak # Clean up the backup file
-
-# Ensure the docker-compose file is named .yml for consistency with Docker Compose's preference
+# Fix Docker image configuration to use correct WAHA image
+log_message "Fixing Docker image configuration..."
 if [ -f "docker-compose.yaml" ]; then
-    mv docker-compose.yaml docker-compose.yml || error_exit "Failed to rename docker-compose.yaml to docker-compose.yml."
+    # Replace waha-plus image with correct waha:latest image
+    sed -i "s/image: devlikeapro/waha-plus/image: devlikeapro/waha:latest/" docker-compose.yaml || error_exit "Failed to fix Docker image configuration."
+    log_message "Docker image configuration fixed - using devlikeapro/waha:latest"
+else
+    warn_message "docker-compose.yaml not found, skipping image fix"
 fi
-
-log_message "WAHA docker-compose configuration updated."
 
 # 11. Configure WAHA .env file
 log_message "Configuring WAHA .env file..."
-
-# Create .env file with WAHA Core configuration
-cat <<EOF > "$WAHA_DIR/.env"
-# WAHA Core Configuration
+if [ ! -f ".env.example" ]; then
+    warn_message ".env.example not found. Creating basic .env file..."
+    cat <<EOF > .env
+# WAHA Configuration
 WAHA_API_KEY=$WAHA_API_KEY
 WAHA_DASHBOARD_USERNAME=$WAHA_DASHBOARD_USERNAME
 WAHA_DASHBOARD_PASSWORD=$WAHA_DASHBOARD_PASSWORD
-
-# Server Configuration
-WAHA_PORT=3000
-WAHA_HOST=0.0.0.0
-
-# Optional: Webhook Configuration
-# WAHA_WEBHOOK_URL=https://your-webhook-url.com/webhook
-# WAHA_WEBHOOK_EVENTS=message,message.any,state.change
-
-# Optional: File Storage
-# WAHA_FILES_FOLDER=/app/files
-# WAHA_FILES_LIFETIME=180
-
-# Optional: Session Configuration
-# WAHA_SESSIONS_FOLDER=/app/sessions
-# WAHA_SESSIONS_SAVE_TO_FILE=true
+WAHA_BIND_HOST=127.0.0.1
+WAHA_PORT=$WAHA_PORT
 EOF
+else
+    cp .env.example .env || error_exit "Failed to copy .env.example to .env."
+    
+    # Update .env with generated values
+    sed -i "s/^WAHA_API_KEY=.*/WAHA_API_KEY=$WAHA_API_KEY/" .env || error_exit "Failed to set WAHA_API_KEY."
+    sed -i "s/^WAHA_DASHBOARD_USERNAME=.*/WAHA_DASHBOARD_USERNAME=$WAHA_DASHBOARD_USERNAME/" .env || error_exit "Failed to set WAHA_DASHBOARD_USERNAME."
+    sed -i "s/^WAHA_DASHBOARD_PASSWORD=.*/WAHA_DASHBOARD_PASSWORD=$WAHA_DASHBOARD_PASSWORD/" .env || error_exit "Failed to set WAHA_DASHBOARD_PASSWORD."
+    
+    # Ensure WAHA binds to localhost
+    if grep -q "WAHA_BIND_HOST" .env; then
+        sed -i "s/^WAHA_BIND_HOST=.*/WAHA_BIND_HOST=127.0.0.1/" .env || error_exit "Failed to set WAHA_BIND_HOST."
+    else
+        echo "WAHA_BIND_HOST=127.0.0.1" >> .env || error_exit "Failed to add WAHA_BIND_HOST to .env."
+    fi
+    
+    # Set port if not already set
+    if ! grep -q "WAHA_PORT" .env; then
+        echo "WAHA_PORT=$WAHA_PORT" >> .env || error_exit "Failed to add WAHA_PORT to .env."
+    fi
+fi
 
 log_message "WAHA .env file configured."
 
-# 12. Pull WAHA Core image and start containers
-log_message "Pulling WAHA Core Docker image..."
-# Use docker-compose.yml explicitly if it was renamed
-docker compose -f docker-compose.yml pull || error_exit "Failed to pull WAHA Core image."
-
+# 12. Start WAHA containers
 log_message "Starting WAHA Docker containers..."
-# Use docker-compose.yml explicitly if it was renamed
-docker compose -f docker-compose.yml up -d || error_exit "Failed to start WAHA containers with Docker Compose."
+docker compose up -d || error_exit "Failed to start WAHA containers with Docker Compose."
 
 # 13. Wait for WAHA to be ready
 verify_waha_running "$SUBDOMAIN"
@@ -506,7 +505,7 @@ obtain_ssl_certificate "$SUBDOMAIN" "$LETSENCRYPT_EMAIL"
 
 # 17. Final verification
 log_message "Performing final verification..."
-if curl -s -k "https://$SUBDOMAIN" | grep -q "WAHA\|WhatsApp\|API" || curl -s -I "https://$SUBDOMAIN" | grep -q "HTTP/"; then
+if curl -s -k "https://$SUBDOMAIN" | grep -q "WAHA\\|WhatsApp\\|API" || curl -s -I "https://$SUBDOMAIN" | grep -q "HTTP/"; then
     log_message "WAHA is accessible via HTTPS!"
 else
     warn_message "WAHA HTTPS verification failed. Please check manually."
