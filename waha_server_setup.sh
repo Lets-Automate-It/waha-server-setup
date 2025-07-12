@@ -413,13 +413,10 @@ else
     sleep 5
 fi
 
-# 5. Install system dependencies
+# 6. Install system dependencies
 log_message "Installing system dependencies..."
 apt update || error_exit "Failed to update package list."
 apt install -y curl wget gnupg2 lsb-release net-tools || error_exit "Failed to install system dependencies."
-
-# 6. Install Git
-install_git
 
 # 7. Install Docker and Docker Compose
 install_docker
@@ -430,54 +427,73 @@ install_nginx
 # 9. Configure UFW
 configure_ufw
 
-# 10. Clone WAHA repository
-log_message "Cloning WAHA repository..."
+# 10. Clone WAHA repository and setup docker-compose
+log_message "Setting up WAHA configuration..."
 if [ -d "$WAHA_DIR" ]; then
     warn_message "WAHA directory already exists. Removing it..."
     rm -rf "$WAHA_DIR" || error_exit "Failed to remove existing WAHA directory."
 fi
 
 mkdir -p "$WAHA_DIR" || error_exit "Failed to create WAHA directory."
-git clone https://github.com/devlikeapro/waha.git "$WAHA_DIR" || error_exit "Failed to clone WAHA repository."
+
+# Create docker-compose.yml for WAHA Core
+cat <<EOF > "$WAHA_DIR/docker-compose.yml"
+version: '3.8'
+
+services:
+  waha:
+    image: devlikeapro/waha:latest
+    container_name: waha
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${WAHA_PORT}:3000"
+    environment:
+      - WAHA_API_KEY=\${WAHA_API_KEY}
+      - WAHA_DASHBOARD_USERNAME=\${WAHA_DASHBOARD_USERNAME}
+      - WAHA_DASHBOARD_PASSWORD=\${WAHA_DASHBOARD_PASSWORD}
+    volumes:
+      - ./sessions:/app/sessions
+      - ./files:/app/files
+    env_file:
+      - .env
+EOF
+
 cd "$WAHA_DIR" || error_exit "Failed to change directory to WAHA_DIR."
-log_message "WAHA repository cloned."
+log_message "WAHA docker-compose configuration created."
 
 # 11. Configure WAHA .env file
 log_message "Configuring WAHA .env file..."
-if [ ! -f ".env.example" ]; then
-    warn_message ".env.example not found. Creating basic .env file..."
-    cat <<EOF > .env
-# WAHA Configuration
+
+# Create .env file with WAHA Core configuration
+cat <<EOF > "$WAHA_DIR/.env"
+# WAHA Core Configuration
 WAHA_API_KEY=$WAHA_API_KEY
 WAHA_DASHBOARD_USERNAME=$WAHA_DASHBOARD_USERNAME
 WAHA_DASHBOARD_PASSWORD=$WAHA_DASHBOARD_PASSWORD
-WAHA_BIND_HOST=127.0.0.1
-WAHA_PORT=$WAHA_PORT
+
+# Server Configuration
+WAHA_PORT=3000
+WAHA_HOST=0.0.0.0
+
+# Optional: Webhook Configuration
+# WAHA_WEBHOOK_URL=https://your-webhook-url.com/webhook
+# WAHA_WEBHOOK_EVENTS=message,message.any,state.change
+
+# Optional: File Storage
+# WAHA_FILES_FOLDER=/app/files
+# WAHA_FILES_LIFETIME=180
+
+# Optional: Session Configuration
+# WAHA_SESSIONS_FOLDER=/app/sessions
+# WAHA_SESSIONS_SAVE_TO_FILE=true
 EOF
-else
-    cp .env.example .env || error_exit "Failed to copy .env.example to .env."
-    
-    # Update .env with generated values
-    sed -i "s/^WAHA_API_KEY=.*/WAHA_API_KEY=$WAHA_API_KEY/" .env || error_exit "Failed to set WAHA_API_KEY."
-    sed -i "s/^WAHA_DASHBOARD_USERNAME=.*/WAHA_DASHBOARD_USERNAME=$WAHA_DASHBOARD_USERNAME/" .env || error_exit "Failed to set WAHA_DASHBOARD_USERNAME."
-    sed -i "s/^WAHA_DASHBOARD_PASSWORD=.*/WAHA_DASHBOARD_PASSWORD=$WAHA_DASHBOARD_PASSWORD/" .env || error_exit "Failed to set WAHA_DASHBOARD_PASSWORD."
-    
-    # Ensure WAHA binds to localhost
-    if grep -q "WAHA_BIND_HOST" .env; then
-        sed -i "s/^WAHA_BIND_HOST=.*/WAHA_BIND_HOST=127.0.0.1/" .env || error_exit "Failed to set WAHA_BIND_HOST."
-    else
-        echo "WAHA_BIND_HOST=127.0.0.1" >> .env || error_exit "Failed to add WAHA_BIND_HOST to .env."
-    fi
-    
-    # Set port if not already set
-    if ! grep -q "WAHA_PORT" .env; then
-        echo "WAHA_PORT=$WAHA_PORT" >> .env || error_exit "Failed to add WAHA_PORT to .env."
-    fi
-fi
 
 log_message "WAHA .env file configured."
 
-# 12. Start WAHA containers
+# 12. Pull WAHA Core image and start containers
+log_message "Pulling WAHA Core Docker image..."
+docker pull devlikeapro/waha:latest || error_exit "Failed to pull WAHA Core image."
+
 log_message "Starting WAHA Docker containers..."
 docker compose up -d || error_exit "Failed to start WAHA containers with Docker Compose."
 
