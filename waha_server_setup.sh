@@ -446,7 +446,7 @@ log_message "WAHA repository cloned."
 log_message "Fixing Docker image configuration..."
 if [ -f "docker-compose.yaml" ]; then
     # Replace waha-plus image with correct waha:latest image
-    sed -i "s/image: devlikeapro/waha-plus/image: devlikeapro/waha:latest/" docker-compose.yaml || error_exit "Failed to fix Docker image configuration."
+    sed -i "s|image: devlikeapro/waha-plus|image: devlikeapro/waha:latest|" docker-compose.yaml || error_exit "Failed to fix Docker image configuration."
     log_message "Docker image configuration fixed - using devlikeapro/waha:latest"
 else
     warn_message "docker-compose.yaml not found, skipping image fix"
