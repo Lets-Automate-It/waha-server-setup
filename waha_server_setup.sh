@@ -444,7 +444,7 @@ cd "$WAHA_DIR" || error_exit "Failed to change directory to WAHA_DIR."
 # Modify the cloned docker-compose.yaml to use the 'latest' image
 log_message "Modifying docker-compose.yaml to use 'devlikeapro/waha:latest' image..."
 # Use a temporary file for sed to work correctly across different systems
-sed -i.bak 's|image: devlikeapro/waha-plus|image: devlikeapro/waha:latest|g' docker-compose.yaml || error_exit "Failed to update docker-compose.yaml image."
+sed -i.bak 's|image: devlikeapro/waha|image: devlikeapro/waha:latest|g' docker-compose.yaml || error_exit "Failed to update docker-compose.yaml image."
 rm -f docker-compose.yaml.bak # Clean up the backup file
 
 # Ensure the docker-compose file is named .yml for consistency with Docker Compose's preference
