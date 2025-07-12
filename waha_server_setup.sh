@@ -282,6 +282,29 @@ verify_waha_running() {
 
 # --- Main Script ---
 
+# Self-update/execution logic
+if [[ "$(basename "$0")" != "waha-install.sh" ]]; then
+    log_message "Cloning and executing the main script..."
+    REPO_URL="https://github.com/Lets-Automate-It/waha-server-setup.git"
+    TEMP_DIR=$(mktemp -d)
+    
+    log_message "Cloning repository to $TEMP_DIR"
+    git clone "$REPO_URL" "$TEMP_DIR" || error_exit "Failed to clone repository."
+    
+    log_message "Executing the main installation script from cloned repository..."
+    # Execute the main script from the temporary directory with sudo
+    sudo "$TEMP_DIR/waha-install.sh"
+    
+    # Clean up the temporary directory
+    rm -rf "$TEMP_DIR"
+    
+    log_message "Temporary installation files removed."
+    exit 0 # Exit after self-execution
+fi
+
+# The rest of your existing script follows from here
+# It will only run if the script is called directly as waha-install.sh
+
 check_root
 
 log_message "Starting WAHA Installation Script"
