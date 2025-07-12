@@ -39,9 +39,11 @@ check_root() {
 validate_domain() {
     local domain="$1"
     
-    # Basic format validation
-    if [[ ! "$domain" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]{0,61}[a-zA-Z0-9]?\.[a-zA-Z]{2,}$ ]]; then
-        error_exit "Invalid domain format: $domain"
+    # Basic format validation - more permissive for subdomains
+    # Allows domains/subdomains starting with numbers or letters
+    # Format: [subdomain.]domain.tld
+    if [[ ! "$domain" =~ ^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$ ]]; then
+        error_exit "Invalid domain format: $domain. Please use format like: subdomain.domain.com"
     fi
     
     # Check DNS resolution
