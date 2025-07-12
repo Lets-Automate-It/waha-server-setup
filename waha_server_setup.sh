@@ -436,6 +436,12 @@ fi
 
 mkdir -p "$WAHA_DIR" || error_exit "Failed to create WAHA directory."
 
+# Explicitly remove docker-compose.yaml if it exists to prevent conflicts
+if [ -f "$WAHA_DIR/docker-compose.yaml" ]; then
+    warn_message "Removing old docker-compose.yaml file to prevent conflicts."
+    rm "$WAHA_DIR/docker-compose.yaml" || warn_message "Failed to remove old docker-compose.yaml."
+fi
+
 # Create docker-compose.yml for WAHA Core
 cat <<EOF > "$WAHA_DIR/docker-compose.yml"
 version: '3.8'
