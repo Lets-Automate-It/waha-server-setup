@@ -117,7 +117,6 @@ install_docker() {
     docker run hello-world || error_exit "Docker installation failed. 'hello-world' test failed."
 
     # Add current user to docker group to run docker commands without sudo
-    # Fixed typo: usermerm -> usermod
     if [ -n "$SUDO_USER" ]; then
         usermod -aG docker "$SUDO_USER" || error_exit "Failed to add $SUDO_USER to docker group."
         log_message "Added $SUDO_USER to docker group."
@@ -427,8 +426,9 @@ install_nginx
 # 9. Configure UFW
 configure_ufw
 
-# 10. Clone WAHA repository and setup docker-compose
+# 10. Setup WAHA directory and configuration
 log_message "Setting up WAHA configuration..."
+# Remove existing WAHA directory if it exists to ensure a clean install
 if [ -d "$WAHA_DIR" ]; then
     warn_message "WAHA directory already exists. Removing it..."
     rm -rf "$WAHA_DIR" || error_exit "Failed to remove existing WAHA directory."
@@ -436,36 +436,23 @@ fi
 
 mkdir -p "$WAHA_DIR" || error_exit "Failed to create WAHA directory."
 
-# Explicitly remove docker-compose.yaml if it exists to prevent conflicts
-if [ -f "$WAHA_DIR/docker-compose.yaml" ]; then
-    warn_message "Removing old docker-compose.yaml file to prevent conflicts."
-    rm "$WAHA_DIR/docker-compose.yaml" || warn_message "Failed to remove old docker-compose.yaml."
+# Clone WAHA repository
+log_message "Cloning WAHA repository into $WAHA_DIR..."
+git clone https://github.com/devlikeapro/waha.git "$WAHA_DIR" || error_exit "Failed to clone WAHA repository."
+cd "$WAHA_DIR" || error_exit "Failed to change directory to WAHA_DIR."
+
+# Modify the cloned docker-compose.yaml to use the 'latest' image
+log_message "Modifying docker-compose.yaml to use 'devlikeapro/waha:latest' image..."
+# Use a temporary file for sed to work correctly across different systems
+sed -i.bak 's|image: devlikeapro/waha-plus|image: devlikeapro/waha:latest|g' docker-compose.yaml || error_exit "Failed to update docker-compose.yaml image."
+rm -f docker-compose.yaml.bak # Clean up the backup file
+
+# Ensure the docker-compose file is named .yml for consistency with Docker Compose's preference
+if [ -f "docker-compose.yaml" ]; then
+    mv docker-compose.yaml docker-compose.yml || error_exit "Failed to rename docker-compose.yaml to docker-compose.yml."
 fi
 
-# Create docker-compose.yml for WAHA Core
-cat <<EOF > "$WAHA_DIR/docker-compose.yml"
-version: '3.8'
-
-services:
-  waha:
-    image: devlikeapro/waha:latest
-    container_name: waha
-    restart: unless-stopped
-    ports:
-      - "127.0.0.1:${WAHA_PORT}:3000"
-    environment:
-      - WAHA_API_KEY=\${WAHA_API_KEY}
-      - WAHA_DASHBOARD_USERNAME=\${WAHA_DASHBOARD_USERNAME}
-      - WAHA_DASHBOARD_PASSWORD=\${WAHA_DASHBOARD_PASSWORD}
-    volumes:
-      - ./sessions:/app/sessions
-      - ./files:/app/files
-    env_file:
-      - .env
-EOF
-
-cd "$WAHA_DIR" || error_exit "Failed to change directory to WAHA_DIR."
-log_message "WAHA docker-compose configuration created."
+log_message "WAHA docker-compose configuration updated."
 
 # 11. Configure WAHA .env file
 log_message "Configuring WAHA .env file..."
@@ -498,10 +485,12 @@ log_message "WAHA .env file configured."
 
 # 12. Pull WAHA Core image and start containers
 log_message "Pulling WAHA Core Docker image..."
-docker pull devlikeapro/waha:latest || error_exit "Failed to pull WAHA Core image."
+# Use docker-compose.yml explicitly if it was renamed
+docker compose -f docker-compose.yml pull || error_exit "Failed to pull WAHA Core image."
 
 log_message "Starting WAHA Docker containers..."
-docker compose up -d || error_exit "Failed to start WAHA containers with Docker Compose."
+# Use docker-compose.yml explicitly if it was renamed
+docker compose -f docker-compose.yml up -d || error_exit "Failed to start WAHA containers with Docker Compose."
 
 # 13. Wait for WAHA to be ready
 verify_waha_running "$SUBDOMAIN"
