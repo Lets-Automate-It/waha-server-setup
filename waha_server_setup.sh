@@ -1,5 +1,6 @@
 #!/bin/bash
 
+# waha_server_setup.sh
 # This script automates the installation of WAHA (WhatsApp HTTP API) on a VPS.
 # It sets up Docker, Docker Compose, Nginx as a reverse proxy, and secures the application with Let's Encrypt SSL.
 
@@ -280,6 +281,52 @@ verify_waha_running() {
     error_exit "WAHA failed to start after $max_attempts attempts. Check Docker logs: cd $WAHA_DIR && docker compose logs"
 }
 
+# Show usage information
+show_usage() {
+    echo "Usage: $0 [OPTIONS]"
+    echo "Options:"
+    echo "  -d, --domain DOMAIN     Domain name (e.g., waha.yourdomain.com)"
+    echo "  -e, --email EMAIL       Email address for Let's Encrypt"
+    echo "  -i, --interactive       Run in interactive mode"
+    echo "  -h, --help              Show this help message"
+    echo ""
+    echo "Examples:"
+    echo "  $0 -d waha.example.com -e admin@example.com"
+    echo "  $0 --interactive"
+    echo "  curl -fsSL https://raw.githubusercontent.com/Lets-Automate-It/waha-server-setup/main/waha_server_setup.sh | sudo bash -s -- -d waha.example.com -e admin@example.com"
+}
+
+# Parse command line arguments
+INTERACTIVE_MODE=false
+SUBDOMAIN=""
+LETSENCRYPT_EMAIL=""
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -d|--domain)
+            SUBDOMAIN="$2"
+            shift 2
+            ;;
+        -e|--email)
+            LETSENCRYPT_EMAIL="$2"
+            shift 2
+            ;;
+        -i|--interactive)
+            INTERACTIVE_MODE=true
+            shift
+            ;;
+        -h|--help)
+            show_usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            show_usage
+            exit 1
+            ;;
+    esac
+done
+
 # --- Main Script ---
 
 check_root
@@ -289,31 +336,59 @@ log_message "Starting WAHA Installation Script"
 echo "IMPORTANT: Before proceeding, ensure your chosen subdomain's A/AAAA DNS records"
 echo "are pointing to this VPS's IP address. This is crucial for SSL certificate issuance."
 echo ""
-read -p "Press Enter to continue..."
 
-# 1. Ask for subdomain and validate it
-while true; do
-    read -p "Enter the subdomain for WAHA (e.g., waha.yourdomain.com): " SUBDOMAIN
-    if [ -z "$SUBDOMAIN" ]; then
-        echo "Subdomain cannot be empty. Please try again."
-        continue
+# Handle interactive vs non-interactive mode
+if [ "$INTERACTIVE_MODE" = true ] || { [ -z "$SUBDOMAIN" ] && [ -z "$LETSENCRYPT_EMAIL" ]; }; then
+    # Interactive mode
+    if [ -t 0 ]; then
+        read -p "Press Enter to continue..."
+    else
+        echo "ERROR: Interactive mode requires a terminal. Use command line arguments instead."
+        echo "Example: curl -fsSL https://raw.githubusercontent.com/Lets-Automate-It/waha-server-setup/main/waha_server_setup.sh | sudo bash -s -- -d waha.example.com -e admin@example.com"
+        exit 1
     fi
+    
+    # 1. Ask for subdomain and validate it
+    while true; do
+        read -p "Enter the subdomain for WAHA (e.g., waha.yourdomain.com): " SUBDOMAIN
+        if [ -z "$SUBDOMAIN" ]; then
+            echo "Subdomain cannot be empty. Please try again."
+            continue
+        fi
+        
+        validate_domain "$SUBDOMAIN"
+        break
+    done
+
+    # 2. Ask for email and validate it
+    while true; do
+        read -p "Enter your email address for Let's Encrypt notifications: " LETSENCRYPT_EMAIL
+        if [ -z "$LETSENCRYPT_EMAIL" ]; then
+            echo "Email cannot be empty. Please try again."
+            continue
+        fi
+        
+        validate_email "$LETSENCRYPT_EMAIL"
+        break
+    done
+else
+    # Non-interactive mode - validate provided arguments
+    if [ -z "$SUBDOMAIN" ] || [ -z "$LETSENCRYPT_EMAIL" ]; then
+        echo "ERROR: Both domain and email are required for non-interactive mode."
+        show_usage
+        exit 1
+    fi
+    
+    echo "Running in non-interactive mode..."
+    echo "Domain: $SUBDOMAIN"
+    echo "Email: $LETSENCRYPT_EMAIL"
+    echo ""
     
     validate_domain "$SUBDOMAIN"
-    break
-done
-
-# 2. Ask for email and validate it
-while true; do
-    read -p "Enter your email address for Let's Encrypt notifications: " LETSENCRYPT_EMAIL
-    if [ -z "$LETSENCRYPT_EMAIL" ]; then
-        echo "Email cannot be empty. Please try again."
-        continue
-    fi
-    
     validate_email "$LETSENCRYPT_EMAIL"
-    break
-done
+    
+    sleep 3
+fi
 
 # 3. Check port availability
 check_port_availability "$WAHA_PORT"
@@ -329,7 +404,12 @@ echo "WAHA Dashboard Username: $WAHA_DASHBOARD_USERNAME"
 echo "WAHA Dashboard Password: $WAHA_DASHBOARD_PASSWORD"
 echo "Please save these credentials securely!"
 echo ""
-read -p "Press Enter to continue with installation..."
+if [ "$INTERACTIVE_MODE" = true ] || [ -t 0 ]; then
+    read -p "Press Enter to continue with installation..."
+else
+    echo "Continuing with installation in 5 seconds..."
+    sleep 5
+fi
 
 # 5. Install system dependencies
 log_message "Installing system dependencies..."
@@ -437,96 +517,3 @@ echo "- Check logs if needed: cd $WAHA_DIR && docker compose logs"
 echo "- Nginx logs: /var/log/nginx/$SUBDOMAIN.error.log"
 echo "- To restart WAHA: cd $WAHA_DIR && docker compose restart"
 echo "================================================================="
-WHATSAPP_FILES_LIFETIME=0
-WHATSAPP_FILES_FOLDER=/app/.media
-ENV_EOF
-    
-    # Start WAHA
-    log "Starting WAHA Docker containers..."
-    docker compose up -d
-    
-    # Wait for WAHA to start
-    sleep 15 # Give WAHA a bit more time to fully initialize
-    
-    # Verify WAHA is running
-    if docker compose ps | grep -q "Up"; then
-        log "WAHA started successfully and is listening on 127.0.0.1:3000"
-    else
-        error "WAHA failed to start. Check docker compose logs."
-        docker compose logs
-        exit 1
-    fi
-}
-
-# Install SSL certificate with Certbot
-install_ssl() {
-    log "Installing SSL certificate for $DOMAIN using Certbot..."
-    
-    # Ensure Nginx is running and configured correctly before Certbot
-    systemctl status nginx > /dev/null || systemctl start nginx
-
-    # Remove default Nginx welcome page, as it can interfere with Certbot
-    if [ -f "/etc/nginx/sites-enabled/default" ]; then
-        rm "/etc/nginx/sites-enabled/default"
-        systemctl reload nginx
-    fi
-    
-    # Attempt to obtain certificate
-    certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos --email "$EMAIL"
-    
-    if [ $? -eq 0 ]; then
-        log "SSL certificate obtained and configured successfully for $DOMAIN"
-        log "Certificates are renewed automatically by Certbot."
-    else
-        error "Failed to obtain SSL certificate for $DOMAIN. Check Certbot logs for details."
-        error "You may need to ensure your DNS A record for $DOMAIN points to this server's public IP."
-        exit 1
-    fi
-    
-    # Reload Nginx to ensure SSL config is active
-    systemctl reload nginx
-}
-
-# Main execution
-main() {
-    echo ""
-    echo "==========================================="
-    echo "       WAHA Server Automated Setup"
-    echo " (with Nginx Reverse Proxy & SSL/Certbot)"
-    echo "==========================================="
-    echo ""
-    
-    check_root
-    collect_inputs
-    
-    log "Starting WAHA server setup..."
-    
-    update_system
-    install_essentials
-    configure_firewall
-    install_docker
-    install_nginx
-    setup_waha
-    install_ssl
-    
-    log "WAHA server setup completed successfully!"
-    echo ""
-    info "Access your WAHA server securely at: https://$DOMAIN"
-    echo ""
-    info "Remember your credentials:"
-    echo "• Dashboard URL: https://$DOMAIN/dashboard"
-    echo "  Username: $DASHBOARD_USER"
-    echo "  Password: $DASHBOARD_PASSWORD"
-    echo ""
-    echo "• API Key (for integrations): $API_KEY"
-    echo ""
-    echo "• Swagger UI (API Documentation): https://$DOMAIN/swagger"
-    echo "  Username: swagger_admin"
-    echo "  Password: $SWAGGER_PASSWORD"
-    echo ""
-    warning "Ensure your DNS A record for '$DOMAIN' points to this server's public IP address."
-    info "If you encounter issues, check firewall rules (ufw status) and Docker/Nginx logs."
-}
-
-# Run main function
-main "$@"
