@@ -1,288 +1,442 @@
 #!/bin/bash
 
-# WAHA Server Automated Setup Script
-# This script replicates a complete WAHA (WhatsApp HTTP API) server setup
-# Adjusted to include Nginx Reverse Proxy and SSL with Certbot for subdomain setup
+# This script automates the installation of WAHA (WhatsApp HTTP API) on a VPS.
+# It sets up Docker, Docker Compose, Nginx as a reverse proxy, and secures the application with Let's Encrypt SSL.
 
-set -e  # Exit on any error
+# --- Configuration Variables ---
+WAHA_DIR="/opt/waha" # Directory where WAHA will be installed
+NGINX_CONF_DIR="/etc/nginx/sites-available"
+NGINX_SYMLINK_DIR="/etc/nginx/sites-enabled"
+WAHA_PORT="3000" # Default WAHA port, as per documentation
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+# --- Functions ---
 
-# Logging function
-log() {
-    echo -e "${GREEN}[$(date +'%Y-%m-%d %H:%M:%S')] $1${NC}"
+# Function to display messages
+log_message() {
+    echo "--- $1 ---"
 }
 
-error() {
-    echo -e "${RED}[ERROR] $1${NC}" >&2
+# Function to display errors and exit
+error_exit() {
+    echo "ERROR: $1" >&2
+    exit 1
 }
 
-warning() {
-    echo -e "${YELLOW}[WARNING] $1${NC}"
+# Function to display warnings
+warn_message() {
+    echo "WARNING: $1" >&2
 }
 
-info() {
-    echo -e "${BLUE}[INFO] $1${NC}"
-}
-
-# Check if running as root
+# Check if script is run as root or with sudo
 check_root() {
     if [[ $EUID -ne 0 ]]; then
-        error "This script must be run as root. Use: sudo $0"
-        exit 1
+        error_exit "This script must be run with sudo or as root."
     fi
 }
 
-# Collect user inputs
-collect_inputs() {
-    echo ""
-    info "=== WAHA Server Setup Configuration ==="
-    echo ""
+# Validate domain format
+validate_domain() {
+    local domain="$1"
     
-    # Domain configuration
-    read -p "Enter your full domain name (e.g., api.yourdomain.com): " DOMAIN
-    if [[ -z "$DOMAIN" ]]; then
-        error "Domain name is required!"
-        exit 1
+    # Basic format validation
+    if [[ ! "$domain" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]{0,61}[a-zA-Z0-9]?\.[a-zA-Z]{2,}$ ]]; then
+        error_exit "Invalid domain format: $domain"
     fi
     
-    # Email for SSL certificate
-    read -p "Enter your email address for SSL certificate (e.g., certadmin@yourdomain.com): " EMAIL
-    if [[ -z "$EMAIL" ]]; then
-        error "Email is required for SSL certificate!"
-        exit 1
-    fi
-    
-    # Dashboard username (optional, default provided)
-    read -p "Enter dashboard username [default: waha_admin]: " DASHBOARD_USER
-    DASHBOARD_USER=${DASHBOARD_USER:-waha_admin}
-    
-    # Generate secure passwords
-    DASHBOARD_PASSWORD=$(openssl rand -base64 32 | tr -d '\n\r=+/' | cut -c1-20) # Shorter, URL-safe
-    SWAGGER_PASSWORD=$(openssl rand -base64 32 | tr -d '\n\r=+/' | cut -c1-20)   # Shorter, URL-safe
-    API_KEY=$(openssl rand -hex 32)
-    
-    info "Auto-generated secure credentials (SAVE THESE CAREFULLY!):"
-    echo -e "${YELLOW}Dashboard Username: $DASHBOARD_USER${NC}"
-    echo -e "${YELLOW}Dashboard Password: $DASHBOARD_PASSWORD${NC}"
-    echo -e "${YELLOW}Swagger Username: swagger_admin${NC}"
-    echo -e "${YELLOW}Swagger Password: $SWAGGER_PASSWORD${NC}"
-    echo -e "${YELLOW}API Key: $API_KEY${NC}"
-    echo ""
-    read -p "Press Enter to continue AFTER you have saved these credentials in a secure place..."
-    
-    # Confirmation
-    echo ""
-    info "=== Configuration Summary ==="
-    echo "Domain: $DOMAIN"
-    echo "Email for SSL: $EMAIL"
-    echo "Dashboard User: $DASHBOARD_USER"
-    echo "Setup will create a production-ready WAHA server with SSL, security, and monitoring."
-    echo ""
-    read -p "Continue with installation? (y/n): " CONFIRM
-    if [[ "$CONFIRM" != "y" && "$CONFIRM" != "Y" ]]; then
-        info "Installation cancelled."
-        exit 0
+    # Check DNS resolution
+    log_message "Checking DNS resolution for $domain..."
+    if ! nslookup "$domain" &>/dev/null; then
+        warn_message "DNS resolution failed for $domain"
+        echo "This might cause SSL certificate issuance to fail."
+        read -p "Do you want to continue anyway? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            error_exit "Aborted by user due to DNS resolution failure."
+        fi
+    else
+        log_message "DNS resolution successful for $domain"
     fi
 }
 
-# Update system
-update_system() {
-    log "Updating system packages..."
-    apt update && apt upgrade -y
-    log "System updated successfully"
+# Validate email format
+validate_email() {
+    local email="$1"
+    if [[ ! "$email" =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+        error_exit "Invalid email format: $email"
+    fi
 }
 
-# Install essential packages
-install_essentials() {
-    log "Installing essential packages..."
-    apt install -y curl wget git nano ufw software-properties-common \
-        apt-transport-https ca-certificates gnupg lsb-release apache2-utils certbot python3-certbot-nginx
-    log "Essential packages installed"
+# Check if port is available
+check_port_availability() {
+    local port="$1"
+    if netstat -tuln | grep -q ":$port "; then
+        error_exit "Port $port is already in use. Please free the port or choose a different one."
+    fi
 }
 
-# Configure firewall
-configure_firewall() {
-    log "Configuring firewall..."
-    ufw allow ssh
-    ufw allow http # Allow port 80 for Certbot validation
-    ufw allow https # Allow port 443 for SSL
-    ufw --force enable
-    log "Firewall configured and enabled"
+# Install Git
+install_git() {
+    log_message "Installing Git..."
+    apt install -y git || error_exit "Failed to install Git."
+    log_message "Git installed successfully."
 }
 
 # Install Docker and Docker Compose
 install_docker() {
-    log "Installing Docker..."
-    
-    # Add Docker repository (using a more modern approach if possible, but current one is still common)
-    if [[ ! -f "/usr/share/keyrings/docker-archive-keyring.gpg" ]]; then
-        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+    log_message "Installing Docker and Docker Compose..."
+
+    # Update package list
+    apt update || error_exit "Failed to update package list."
+
+    # Install necessary packages for Docker
+    apt install -y apt-transport-https ca-certificates curl software-properties-common || error_exit "Failed to install Docker prerequisites."
+
+    # Add Docker's official GPG key
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg || error_exit "Failed to add Docker GPG key."
+
+    # Add Docker repository
+    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null || error_exit "Failed to add Docker repository."
+
+    # Update package list again after adding Docker repo
+    apt update || error_exit "Failed to update package list after adding Docker repo."
+
+    # Install Docker Engine
+    apt install -y docker-ce docker-ce-cli containerd.io || error_exit "Failed to install Docker Engine."
+
+    # Install Docker Compose (using the plugin method for newer versions)
+    apt install -y docker-compose-plugin || error_exit "Failed to install Docker Compose plugin."
+
+    # Start and enable Docker service
+    systemctl start docker || error_exit "Failed to start Docker service."
+    systemctl enable docker || error_exit "Failed to enable Docker service."
+
+    # Verify Docker installation
+    docker run hello-world || error_exit "Docker installation failed. 'hello-world' test failed."
+
+    # Add current user to docker group to run docker commands without sudo
+    # Fixed typo: usermerm -> usermod
+    if [ -n "$SUDO_USER" ]; then
+        usermod -aG docker "$SUDO_USER" || error_exit "Failed to add $SUDO_USER to docker group."
+        log_message "Added $SUDO_USER to docker group."
     fi
     
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
-    
-    # Install Docker
-    apt update
-    apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-    
-    # Start and enable Docker
-    systemctl start docker
-    systemctl enable docker
-    
-    # Verify installation
-    docker --version
-    docker compose version
-    
-    log "Docker installed successfully"
+    if [ "$USER" != "root" ]; then
+        usermod -aG docker "$USER" || error_exit "Failed to add current user to docker group."
+    fi
+
+    log_message "Docker and Docker Compose installed successfully."
+    echo "Please log out and log back in (or run 'newgrp docker') for Docker group changes to take effect."
+    sleep 3
 }
 
-# Install and configure Nginx
+# Install Nginx
 install_nginx() {
-    log "Installing and configuring Nginx..."
-    
-    apt install -y nginx
-    systemctl start nginx
-    systemctl enable nginx
-    
-    # Test Nginx
-    if curl -s http://localhost > /dev/null; then
-        log "Nginx installed and running successfully"
-    else
-        error "Nginx installation failed"
-        exit 1
+    log_message "Installing Nginx..."
+    apt install -y nginx || error_exit "Failed to install Nginx."
+    systemctl start nginx || error_exit "Failed to start Nginx."
+    systemctl enable nginx || error_exit "Failed to enable Nginx."
+
+    # Remove default Nginx site to avoid conflicts
+    if [ -f "/etc/nginx/sites-enabled/default" ]; then
+        rm /etc/nginx/sites-enabled/default || warn_message "Failed to remove default Nginx site."
     fi
 
-    # Create Nginx server block for WAHA
-    log "Creating Nginx configuration for $DOMAIN..."
-    cat > "/etc/nginx/sites-available/$DOMAIN" <<NGINX_CONF
+    log_message "Nginx installed successfully."
+}
+
+# Configure UFW firewall
+configure_ufw() {
+    log_message "Configuring UFW firewall..."
+    
+    # Install UFW if not present
+    if ! command -v ufw &> /dev/null; then
+        apt install -y ufw || error_exit "Failed to install UFW."
+    fi
+    
+    ufw allow OpenSSH || error_exit "Failed to allow OpenSSH through UFW."
+    ufw allow "Nginx Full" || error_exit "Failed to allow Nginx Full through UFW."
+    ufw --force enable || error_exit "Failed to enable UFW."
+    log_message "UFW configured successfully. Allowed OpenSSH and Nginx Full."
+}
+
+# Generate strong random string
+generate_random_string() {
+    openssl rand -base64 32 | tr -dc A-Za-z0-9 | head -c "$1"
+}
+
+# Create HTTP-only Nginx configuration
+setup_nginx_http_only() {
+    local subdomain="$1"
+    local nginx_conf_file="$NGINX_CONF_DIR/$subdomain.conf"
+    
+    log_message "Creating HTTP-only Nginx configuration for $subdomain..."
+
+    cat <<EOF > "$nginx_conf_file"
 server {
     listen 80;
     listen [::]:80;
-    server_name $DOMAIN;
+    server_name $subdomain;
+
+    # Security headers
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Referrer-Policy "no-referrer-when-downgrade" always;
+
+    # Hide Nginx version
+    server_tokens off;
 
     location / {
-        # Proxy to WAHA Docker container
-        proxy_pass http://127.0.0.1:3000;
+        proxy_pass http://127.0.0.1:$WAHA_PORT;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host \$host;
-        proxy_cache_bypass \$http_upgrade;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header Connection "upgrade";
     }
 
-    # Optional: Basic authentication for /swagger and /dashboard if desired (Certbot will add SSL)
-    # location /swagger {
-    #     auth_basic "Swagger Restricted Access";
-    #     auth_basic_user_file /etc/nginx/.htpasswd_swagger;
-    #     proxy_pass http://127.0.0.1:3000/swagger;
-    #     # ... other proxy headers ...
-    # }
-
-    # location /dashboard {
-    #     auth_basic "Dashboard Restricted Access";
-    #     auth_basic_user_file /etc/nginx/.htpasswd_dashboard;
-    #     proxy_pass http://127.0.0.1:3000/dashboard;
-    #     # ... other proxy headers ...
-    # }
+    error_log /var/log/nginx/$subdomain.error.log warn;
+    access_log /var/log/nginx/$subdomain.access.log;
 }
-NGINX_CONF
+EOF
 
-    # Enable the Nginx site
-    ln -s "/etc/nginx/sites-available/$DOMAIN" "/etc/nginx/sites-enabled/"
-    
+    # Create symlink to enable the site
+    ln -sf "$nginx_conf_file" "$NGINX_SYMLINK_DIR/" || error_exit "Failed to create Nginx symlink."
+
     # Test Nginx configuration
-    nginx -t
-    if [ $? -eq 0 ]; then
-        log "Nginx configuration for $DOMAIN is valid."
-    else
-        error "Nginx configuration for $DOMAIN is invalid. Check /etc/nginx/sites-available/$DOMAIN"
-        exit 1
+    nginx -t || error_exit "Nginx configuration test failed. Please check $nginx_conf_file for errors."
+
+    # Reload Nginx to apply new configuration
+    systemctl reload nginx || error_exit "Failed to reload Nginx."
+
+    log_message "HTTP-only Nginx configuration created and applied."
+}
+
+# Install and configure Certbot
+install_certbot() {
+    log_message "Installing Certbot..."
+
+    # Install snapd if not present
+    if ! command -v snap &> /dev/null; then
+        apt install -y snapd || error_exit "Failed to install snapd."
+        systemctl enable snapd || error_exit "Failed to enable snapd."
+        systemctl start snapd || error_exit "Failed to start snapd."
+        
+        # Wait for snapd to be ready
+        sleep 5
+    fi
+
+    # Ensure snap core is installed and up to date
+    snap install core 2>/dev/null || snap refresh core || error_exit "Failed to install/refresh snap core."
+
+    # Remove any existing certbot packages to avoid conflicts
+    apt remove -y certbot python3-certbot-nginx 2>/dev/null || true
+
+    # Install Certbot snap
+    snap install --classic certbot || error_exit "Failed to install Certbot snap."
+    
+    # Create symlink if it doesn't exist
+    if [ ! -L /usr/bin/certbot ]; then
+        ln -s /snap/bin/certbot /usr/bin/certbot || error_exit "Failed to create certbot symlink."
+    fi
+
+    log_message "Certbot installed successfully."
+}
+
+# Obtain SSL certificate and update Nginx config
+obtain_ssl_certificate() {
+    local subdomain="$1"
+    local email="$2"
+    
+    log_message "Obtaining SSL certificate for $subdomain..."
+
+    # Obtain certificate using Nginx plugin
+    certbot --nginx -d "$subdomain" --non-interactive --agree-tos --email "$email" --redirect || error_exit "Failed to obtain SSL certificate with Certbot."
+
+    log_message "SSL certificate obtained and Nginx configuration updated automatically."
+}
+
+# Verify WAHA is running
+verify_waha_running() {
+    local subdomain="$1"
+    local max_attempts=30
+    local attempt=1
+    
+    log_message "Verifying WAHA is running..."
+    
+    while [ $attempt -le $max_attempts ]; do
+        if curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$WAHA_PORT" | grep -q "200\|401\|403"; then
+            log_message "WAHA is running successfully on port $WAHA_PORT"
+            return 0
+        fi
+        
+        echo "Attempt $attempt/$max_attempts: Waiting for WAHA to start..."
+        sleep 5
+        ((attempt++))
+    done
+    
+    error_exit "WAHA failed to start after $max_attempts attempts. Check Docker logs: cd $WAHA_DIR && docker compose logs"
+}
+
+# --- Main Script ---
+
+check_root
+
+log_message "Starting WAHA Installation Script"
+
+echo "IMPORTANT: Before proceeding, ensure your chosen subdomain's A/AAAA DNS records"
+echo "are pointing to this VPS's IP address. This is crucial for SSL certificate issuance."
+echo ""
+read -p "Press Enter to continue..."
+
+# 1. Ask for subdomain and validate it
+while true; do
+    read -p "Enter the subdomain for WAHA (e.g., waha.yourdomain.com): " SUBDOMAIN
+    if [ -z "$SUBDOMAIN" ]; then
+        echo "Subdomain cannot be empty. Please try again."
+        continue
     fi
     
-    systemctl reload nginx
-    log "Nginx configured for WAHA."
-}
+    validate_domain "$SUBDOMAIN"
+    break
+done
 
-# Setup WAHA
-setup_waha() {
-    log "Setting up WAHA..."
+# 2. Ask for email and validate it
+while true; do
+    read -p "Enter your email address for Let's Encrypt notifications: " LETSENCRYPT_EMAIL
+    if [ -z "$LETSENCRYPT_EMAIL" ]; then
+        echo "Email cannot be empty. Please try again."
+        continue
+    fi
     
-    # Create WAHA directory
-    mkdir -p /opt/waha # Using /opt for application data
-    cd /opt/waha
-    
-    # Create docker-compose.yaml
-    cat > docker-compose.yaml << 'COMPOSE_EOF'
-# https://waha.devlike.pro/docs/how-to/install/
-services:
-  waha:
-    restart: always
-    # WAHA Core
-    image: devlikeapro/waha:latest
+    validate_email "$LETSENCRYPT_EMAIL"
+    break
+done
 
-    logging:
-      driver: 'json-file'
-      options:
-        max-size: '100m'
-        max-file: '10'
+# 3. Check port availability
+check_port_availability "$WAHA_PORT"
 
-    ports:
-      # Bind to localhost so Nginx can proxy, and WAHA is not directly exposed
-      - '127.0.0.1:3000:3000/tcp' 
+# 4. Generate strong API key and dashboard credentials
+log_message "Generating API Key and Dashboard Credentials..."
+WAHA_API_KEY=$(generate_random_string 48)
+WAHA_DASHBOARD_USERNAME="admin" # Default, can be changed later
+WAHA_DASHBOARD_PASSWORD=$(generate_random_string 24)
 
-    volumes:
-      # Store sessions in the .sessions folder
-      - './sessions:/app/.sessions'
-      # Save media files
-      - './.media:/app/.media'
+echo "Generated WAHA API Key: $WAHA_API_KEY"
+echo "WAHA Dashboard Username: $WAHA_DASHBOARD_USERNAME"
+echo "WAHA Dashboard Password: $WAHA_DASHBOARD_PASSWORD"
+echo "Please save these credentials securely!"
+echo ""
+read -p "Press Enter to continue with installation..."
 
-    env_file:
-      - .env
+# 5. Install system dependencies
+log_message "Installing system dependencies..."
+apt update || error_exit "Failed to update package list."
+apt install -y curl wget gnupg2 lsb-release net-tools || error_exit "Failed to install system dependencies."
 
-volumes:
-  mongodb_data: {} # Not used by default WAHA, but often included in examples
-  minio_data: {}   # Not used by default WAHA, but often included in examples
-  pg_data: {}      # Not used by default WAHA, but often included in examples
-COMPOSE_EOF
-    
-    # Create .env configuration file
-    cat > .env << ENV_EOF
+# 6. Install Git
+install_git
+
+# 7. Install Docker and Docker Compose
+install_docker
+
+# 8. Install Nginx
+install_nginx
+
+# 9. Configure UFW
+configure_ufw
+
+# 10. Clone WAHA repository
+log_message "Cloning WAHA repository..."
+if [ -d "$WAHA_DIR" ]; then
+    warn_message "WAHA directory already exists. Removing it..."
+    rm -rf "$WAHA_DIR" || error_exit "Failed to remove existing WAHA directory."
+fi
+
+mkdir -p "$WAHA_DIR" || error_exit "Failed to create WAHA directory."
+git clone https://github.com/devlikeapro/waha.git "$WAHA_DIR" || error_exit "Failed to clone WAHA repository."
+cd "$WAHA_DIR" || error_exit "Failed to change directory to WAHA_DIR."
+log_message "WAHA repository cloned."
+
+# 11. Configure WAHA .env file
+log_message "Configuring WAHA .env file..."
+if [ ! -f ".env.example" ]; then
+    warn_message ".env.example not found. Creating basic .env file..."
+    cat <<EOF > .env
 # WAHA Configuration
-# WAHA_BASE_URL is now handled by Nginx proxy
-# WAHA_BASE_URL=https://$DOMAIN 
+WAHA_API_KEY=$WAHA_API_KEY
+WAHA_DASHBOARD_USERNAME=$WAHA_DASHBOARD_USERNAME
+WAHA_DASHBOARD_PASSWORD=$WAHA_DASHBOARD_PASSWORD
+WAHA_BIND_HOST=127.0.0.1
+WAHA_PORT=$WAHA_PORT
+EOF
+else
+    cp .env.example .env || error_exit "Failed to copy .env.example to .env."
+    
+    # Update .env with generated values
+    sed -i "s/^WAHA_API_KEY=.*/WAHA_API_KEY=$WAHA_API_KEY/" .env || error_exit "Failed to set WAHA_API_KEY."
+    sed -i "s/^WAHA_DASHBOARD_USERNAME=.*/WAHA_DASHBOARD_USERNAME=$WAHA_DASHBOARD_USERNAME/" .env || error_exit "Failed to set WAHA_DASHBOARD_USERNAME."
+    sed -i "s/^WAHA_DASHBOARD_PASSWORD=.*/WAHA_DASHBOARD_PASSWORD=$WAHA_DASHBOARD_PASSWORD/" .env || error_exit "Failed to set WAHA_DASHBOARD_PASSWORD."
+    
+    # Ensure WAHA binds to localhost
+    if grep -q "WAHA_BIND_HOST" .env; then
+        sed -i "s/^WAHA_BIND_HOST=.*/WAHA_BIND_HOST=127.0.0.1/" .env || error_exit "Failed to set WAHA_BIND_HOST."
+    else
+        echo "WAHA_BIND_HOST=127.0.0.1" >> .env || error_exit "Failed to add WAHA_BIND_HOST to .env."
+    fi
+    
+    # Set port if not already set
+    if ! grep -q "WAHA_PORT" .env; then
+        echo "WAHA_PORT=$WAHA_PORT" >> .env || error_exit "Failed to add WAHA_PORT to .env."
+    fi
+fi
 
-# Security - API Authentication
-WHATSAPP_API_KEY=$API_KEY
+log_message "WAHA .env file configured."
 
-# Dashboard Authentication
-WAHA_DASHBOARD_ENABLED=true
-WAHA_DASHBOARD_USERNAME=$DASHBOARD_USER
-WAHA_DASHBOARD_PASSWORD=$DASHBOARD_PASSWORD
+# 12. Start WAHA containers
+log_message "Starting WAHA Docker containers..."
+docker compose up -d || error_exit "Failed to start WAHA containers with Docker Compose."
 
-# Swagger Documentation Authentication
-WHATSAPP_SWAGGER_USERNAME=swagger_admin
-WHATSAPP_SWAGGER_PASSWORD=$SWAGGER_PASSWORD
+# 13. Wait for WAHA to be ready
+verify_waha_running "$SUBDOMAIN"
 
-# Logging
-WAHA_LOG_FORMAT=JSON
-WAHA_LOG_LEVEL=info
+# 14. Create HTTP-only Nginx configuration
+setup_nginx_http_only "$SUBDOMAIN"
 
-# Engine
-WHATSAPP_DEFAULT_ENGINE=WEBJS
+# 15. Install Certbot
+install_certbot
 
-# Sessions
-WAHA_PRINT_QR=False
+# 16. Obtain SSL certificate (this will automatically update Nginx config)
+obtain_ssl_certificate "$SUBDOMAIN" "$LETSENCRYPT_EMAIL"
 
-# Media - Local Storage
-WAHA_MEDIA_STORAGE=LOCAL
+# 17. Final verification
+log_message "Performing final verification..."
+if curl -s -k "https://$SUBDOMAIN" | grep -q "WAHA\|WhatsApp\|API" || curl -s -I "https://$SUBDOMAIN" | grep -q "HTTP/"; then
+    log_message "WAHA is accessible via HTTPS!"
+else
+    warn_message "WAHA HTTPS verification failed. Please check manually."
+fi
+
+log_message "WAHA installation completed successfully!"
+echo ""
+echo "================================================================="
+echo "WAHA Installation Summary"
+echo "================================================================="
+echo "WAHA URL: https://$SUBDOMAIN"
+echo "API Key: $WAHA_API_KEY"
+echo "Dashboard Username: $WAHA_DASHBOARD_USERNAME"
+echo "Dashboard Password: $WAHA_DASHBOARD_PASSWORD"
+echo "Let's Encrypt Email: $LETSENCRYPT_EMAIL"
+echo ""
+echo "Important Notes:"
+echo "- Keep your API key and dashboard credentials secure"
+echo "- SSL certificates will renew automatically"
+echo "- Check logs if needed: cd $WAHA_DIR && docker compose logs"
+echo "- Nginx logs: /var/log/nginx/$SUBDOMAIN.error.log"
+echo "- To restart WAHA: cd $WAHA_DIR && docker compose restart"
+echo "================================================================="
 WHATSAPP_FILES_LIFETIME=0
 WHATSAPP_FILES_FOLDER=/app/.media
 ENV_EOF
